@@ -1,23 +1,29 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
-  "installCommand": "npm ci",
-  "buildCommand": "npm run build:api",
+  "installCommand": "npm ci --ignore-scripts",
+  "buildCommand": "echo build skipped",
+  "outputDirectory": "dist-api",
   "functions": {
-    "api/**/*.ts": {
-      "runtime": "@vercel/node",
-      "maxDuration": 30,
-      "memory": 512
-    }
+    "api/live.ts": { "maxDuration": 30 },
+    "api/ready.ts": { "maxDuration": 30 },
+    "api/health.ts": { "maxDuration": 30 },
+    "api/metrics.ts": { "maxDuration": 30 },
+    "api/opportunities.ts": { "maxDuration": 30 },
+    "api/suppliers.ts": { "maxDuration": 30 },
+    "api/products.ts": { "maxDuration": 30 },
+    "api/audit.ts": { "maxDuration": 30 }
   },
   "routes": [
-    { "src": "/api/health", "dest": "/api/health" },
     { "src": "/api/live", "dest": "/api/live" },
     { "src": "/api/ready", "dest": "/api/ready" },
+    { "src": "/api/health", "dest": "/api/health" },
     { "src": "/api/metrics", "dest": "/api/metrics" },
     { "src": "/api/opportunities", "dest": "/api/opportunities" },
     { "src": "/api/suppliers", "dest": "/api/suppliers" },
     { "src": "/api/products", "dest": "/api/products" },
-    { "src": "/api/audit", "dest": "/api/audit" }
+    { "src": "/api/audit", "dest": "/api/audit" },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "status": 404 }
   ]
 }
