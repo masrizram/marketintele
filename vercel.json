@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build:api",
+  "functions": {
+    "api/**/*.ts": {
+      "runtime": "@vercel/node",
+      "maxDuration": 30,
+      "memory": 512
+    }
+  },
+  "routes": [
+    { "src": "/api/health", "dest": "/api/health" },
+    { "src": "/api/live", "dest": "/api/live" },
+    { "src": "/api/ready", "dest": "/api/ready" },
+    { "src": "/api/metrics", "dest": "/api/metrics" },
+    { "src": "/api/opportunities", "dest": "/api/opportunities" },
+    { "src": "/api/suppliers", "dest": "/api/suppliers" },
+    { "src": "/api/products", "dest": "/api/products" },
+    { "src": "/api/audit", "dest": "/api/audit" }
+  ]
+}

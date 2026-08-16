@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  quality:
+    name: Typecheck · Lint · Build · Test · Coverage
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: marketintele_app
+          POSTGRES_PASSWORD: marketintele
+          POSTGRES_DB: marketintele
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U marketintele_app -d marketintele"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TELEGRAM_BOT_TOKEN: YOUR_TELEGRAM_BOT_TOKEN_HERE
+      PG_HOST: localhost
+      PG_PORT: 5432
+      PG_USER: marketintele_app
+      PG_PASSWORD: marketintele
+      PG_DATABASE: marketintele
+      PG_SSL_MODE: disable
+      PG_SKIP_OK: 'false'
+      REDIS_URL: redis://localhost:6379/0
+      DATABASE_PATH: ./data/belibot.db
+      SCRAPER_REQUEST_TIMEOUT_MS: 15000
+      SCRAPER_DELAY_MIN_MS: 1000
+      SCRAPER_DELAY_MAX_MS: 3000
+      MAX_CONCURRENT_REQUESTS: 5
+      LOG_LEVEL: info
+      MAX_SEARCH_RESULTS: 10
+      NOTIFICATION_CHECK_INTERVAL_SEC: 300
+      ALLOWED_USER_IDS: 123456789
+      SSRF_FIREWALL_ENABLED: true
+      HEALTH_PORT: 9090
+      ADMIN_API_KEY: ci-test-admin-key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for PostgreSQL
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U marketintele_app; then
+              echo "PostgreSQL is ready"
+              break
+            fi
+            echo "Waiting for PostgreSQL... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run migration
+        run: npm run migrate
+
+      - name: Verify Supabase/PostgreSQL connection
+        run: npm run verify:supabase
+        env:
+          DATABASE_URL: postgresql://marketintele_app:marketintele@localhost:5432/marketintele
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Typecheck API layer
+        run: npm run typecheck:api
+
+      - name: Lint
+        run: npx eslint src --ext .ts --quiet
+
+      - name: Lint API layer
+        run: npx eslint api --ext .ts --quiet
+        continue-on-error: true
+
+      - name: Build
+        run: npm run build
+
+      - name: Build API layer
+        run: npm run build:api
+
+      - name: Test with coverage
+        run: npx jest --coverage --forceExit
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  security-scan:
+    name: Secret Scan · Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for committed secrets
+        run: |
+          if grep -rE "(sk-|AKIA|ghp_|gho_|xoxb-|8827153289:)" --include="*.ts" --include="*.js" --include="*.json" --include="*.yml" --include="*.yaml" --include="*.env" . 2>/dev/null; then
+            echo "FATAL: Secret pattern detected in tracked files"
+            exit 1
+          fi
+          echo "No secret patterns detected"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Dependency audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: true

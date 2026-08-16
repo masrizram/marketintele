@@ -1,0 +1,67 @@
+# ── MarketIntele Arbitrage Intelligence Engine — docker-compose.yml ──────────
+# Reproducible local development + staging environment.
+# Usage:
+#   docker compose up -d          # Start PostgreSQL
+#   npm run migrate               # Apply migrations
+#   npm run build && npm start    # Start the engine
+#
+# For production deployment, use the Dockerfile to build the app image and
+# orchestrate with this file (or your preferred orchestrator).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: marketintele-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: marketintele_app
+      POSTGRES_PASSWORD: CHANGE_ME
+      POSTGRES_DB: marketintele
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marketintele_app -d marketintele"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - marketintele-net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: marketintele-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+    ports:
+      - "9090:9090"
+    volumes:
+      - appdata:/app/data
+    networks:
+      - marketintele-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  pgdata:
+    driver: local
+  appdata:
+    driver: local
+
+networks:
+  marketintele-net:
+    driver: bridge

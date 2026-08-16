@@ -1,0 +1,19 @@
+# .gitignore — MarketIntele Arbitrage Intelligence Engine
+node_modules/
+dist/
+dist-api/
+.vercel/
+.env
+.env.*
+.env.local
+.env.production
+*.log
+*.db
+*.sqlite
+*.sqlite3
+data/
+test-fixtures/
+coverage/
+.nyc_output/
+.audit-runtime/
+.DS_Store
