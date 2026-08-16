@@ -4,6 +4,7 @@
   "installCommand": "npm ci --ignore-scripts",
   "buildCommand": "echo build skipped",
   "outputDirectory": "dist-api",
+  "regions": ["hnd1"],
   "functions": {
     "api/live.ts": { "maxDuration": 30 },
     "api/ready.ts": { "maxDuration": 30 },
