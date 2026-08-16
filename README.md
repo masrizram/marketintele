@@ -125,8 +125,8 @@ Discovery → Market Clearing Price → Matching → Supplier Sourcing
 | Coverage | **PASS** | 85.62% statements (threshold 80% met) |
 | Lint | **PASS** | `npx eslint src --ext .ts --quiet` → 0 errors |
 | Financial Integrity | **PASS** | UNKNOWN≠0, Decimal precision 28, dual-engine, NaN rejected |
-| Supabase DB layer | **IMPLEMENTED + TESTED** | Connection resolver, migration, verify command; runtime NOT_TESTED (no Supabase credentials) |
-| Vercel API layer | **IMPLEMENTED + TESTED** | 8 routes, admin guard, method guards, route tests; deployment NOT_TESTED |
+| Supabase DB layer | **IMPLEMENTED + DEPLOYED** | Connection resolver, migration, verify command; runtime verified against live Supabase (16/16 PASS) |
+| Vercel API layer | **DEPLOYED + VERIFIED** | 8 routes, admin guard, method guards, route tests; production deployment validated (live smoke test PASS) |
 | Supplier Sourcing | **INTEGRATION_VERIFIED** | Contract complete, 21 failure-injection tests; real runtime **NOT_TESTED** |
 | Marketplace Integration | **IMPLEMENTED** | 5 adapters coded; HTTP calls **NOT_TESTED** (no live API access) |
 | PostgreSQL | **RUNTIME_VERIFIED** | 28 integration tests against PostgreSQL 16 (when DB available) |
@@ -457,17 +457,25 @@ On Vercel, the same data is exposed at `/api/health`, `/api/live`, `/api/ready`,
 
 ## 16. Vercel Deployment
 
-1. Push the repository to GitHub.
-2. Import the project in Vercel (auto-detects Node).
-3. Configure environment variables in Vercel (Project → Settings → Environment Variables):
-   - `SUPABASE_DATABASE_URL` (pooled, port 6543, `?sslmode=require`)
+1. Push the repository to GitHub (or deploy directly via Vercel CLI).
+2. Link the project: `vercel link` (auto-detects Node; `requirements.txt` must be absent to avoid Python misdetection).
+3. Configure environment variables in Vercel (Project → Settings → Environment Variables, Production):
+   - `SUPABASE_DATABASE_URL` (pooled, port 6543, `?pgbouncer=true`; SSL handled in code)
    - `ADMIN_API_KEY`
    - `SSRF_FIREWALL_ENABLED=true`
-   - Do **NOT** set `TELEGRAM_BOT_TOKEN` or `WORKER_MODE` on Vercel.
-4. Deploy. Vercel builds via `npm run build:api` (see `vercel.json`).
-5. Verify: `curl https://<project>.vercel.app/api/health`.
+   - `APPLICATION_ENV=production`
+   - `WORKER_MODE=false`
+   - Do **NOT** set `NODE_ENV` as a Vercel env var (it breaks `npm ci` by skipping devDependencies like `typescript`); the platform sets it automatically.
+   - Do **NOT** set `TELEGRAM_BOT_TOKEN` on Vercel (worker-only).
+4. Deploy: `vercel --prod`.
+5. Verify: `curl -H "Accept: application/json" https://<project>.vercel.app/api/health`.
+6. Disable SSO deployment protection (Project → Settings → Deployment Protection) if the API must be publicly accessible without Vercel auth.
 
-`vercel.json` configures `@vercel/node` functions for `api/**/*.ts` with 30s max duration. No crons are configured (none justified today).
+`vercel.json` configures serverless functions for each `api/*.ts` route with 30s max duration. `installCommand: "npm ci --ignore-scripts"` skips the `better-sqlite3` native build (worker-only dependency, not used by the serverless API). No crons are configured (none justified today).
+
+**Production URL:** `https://marketintele-rizki-ramdanis-projects.vercel.app`
+
+**Note on latency:** Vercel functions deploy to `iad1` (Washington, D.C.) by default; Supabase is in `ap-northeast-1` (Tokyo). DB-backed endpoints incur ~1.3–2.4s cross-continent round-trip. To reduce latency, configure the Vercel project region to `hnd1` (Tokyo) to co-locate with Supabase.
 
 ---
 
@@ -563,8 +571,8 @@ Decision gates C01–C15 (13 critical + 2 warning). Any critical fail → `REJEC
 | Real supplier adapter | NOT_TESTED | No B2B API credentials |
 | Marketplace adapter HTTP | NOT_TESTED | 5 adapters coded; no live API calls |
 | Real arbitrage validation | NOT_TESTED | No real supplier/marketplace data |
-| Supabase runtime | NOT_TESTED | Connection/migration/verify implemented; no Supabase credentials to test against |
-| Vercel deployment | NOT_TESTED | API layer implemented + route tests; no live deployment performed |
+| Supabase runtime | **DEPLOYED + VERIFIED** | Connection/migration/verify validated against live Supabase Tokyo; 16/16 PASS |
+| Vercel deployment | **DEPLOYED + VERIFIED** | Production deployment live; 8 endpoints smoke-tested (all PASS) |
 | Telegram bot runtime | NOT_TESTED | Requires valid token to start |
 | Dead-letter queue | MISSING | No async queue |
 | Migration rollback | NOT_IMPLEMENTED | Forward-only |
@@ -581,13 +589,13 @@ Decision gates C01–C15 (13 critical + 2 warning). Any critical fail → `REJEC
 - [x] health/metrics, graceful shutdown
 - [x] Supabase DB layer implemented + tested (connection resolver, verify command)
 - [x] Vercel API layer implemented + tested (8 routes, admin guard)
+- [x] Supabase runtime verified against live project (16/16 PASS)
+- [x] Vercel deployment verified (production live, all 8 endpoints smoke-tested PASS)
 - [ ] real supplier API runtime (NOT_TESTED)
 - [ ] real marketplace API runtime (NOT_TESTED)
-- [ ] Supabase runtime verification against a real project (NOT_TESTED — no credentials)
-- [ ] Vercel deployment verification (NOT_TESTED — no deployment performed)
 - [ ] 7-day production observation (NOT_TESTED)
 
-**Production Gate: `NOT_READY`** — P0 = 0, P1 = 3 (supplier runtime, marketplace HTTP, no real data). The migration improves deployment readiness but does not close the P1 business-verification items.
+**Production Gate: `INFRASTRUCTURE_READY`** — Infrastructure, API, database, and security are production-ready and deployed. P1 business-verification items remain: supplier runtime, marketplace HTTP, real arbitrage data. See `FINAL_VERCEL_PRODUCTION_DEPLOYMENT_REPORT.md` for full evidence.
 
 ---
 
