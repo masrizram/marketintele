@@ -28,6 +28,10 @@ export class BlibliAdapter extends BaseSourceAdapter {
   readonly trustTier: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'UNKNOWN' = 'MEDIUM';
   readonly isActive = true;
   readonly marketplace = 'blibli' as const;
+  /** Phase 19.3: Blibli uses a public CMS API endpoint (no auth) — REAL_PUBLIC_ENDPOINT. */
+  readonly dataProvenance = 'REAL_PUBLIC_ENDPOINT' as const;
+  readonly acquisitionMethod = 'PUBLIC_ENDPOINT' as const;
+  readonly reliabilityTier = 'C' as const;
 
   private readonly requestTimeoutMs = 15000;
   private readonly searchApiUrl = 'https://www.blibli.com/cms-api/product-search';
@@ -110,10 +114,13 @@ export class BlibliAdapter extends BaseSourceAdapter {
    */
   private extractPrice(price: any): number | null {
     if (price === null || price === undefined) return null;
-    if (typeof price === 'number') return price;
+    if (typeof price === 'number') return Number.isFinite(price) ? price : null;
     if (typeof price === 'string') {
       const cleaned = price.replace(/[^0-9]/g, '');
-      if (cleaned.length > 0) return parseInt(cleaned, 10);
+      if (cleaned.length > 0) {
+        const n = parseInt(cleaned, 10);
+        return Number.isFinite(n) ? n : null;
+      }
     }
     return null;
   }
@@ -255,7 +262,11 @@ export class BlibliAdapter extends BaseSourceAdapter {
   }
 
   async normalize(parsedData: ParsedEntity): Promise<CanonicalProduct> {
-    const priceIdr = parsedData.price ?? null;
+    const priceIdr =
+      typeof parsedData.price === 'number' && Number.isFinite(parsedData.price)
+        ? parsedData.price
+        : null;
+    const retrievedAt = new Date().toISOString();
 
     return {
       id: ulid(),
@@ -281,6 +292,9 @@ export class BlibliAdapter extends BaseSourceAdapter {
       marketplaceListingUrl: null,
       observedAt: parsedData.extractedAt,
       confidence: parsedData.extractionConfidence || 0,
+      dataProvenance: this.dataProvenance,
+      acquisitionMethod: this.acquisitionMethod,
+      retrievedAt,
       dataLineage: {
         sourceId: parsedData.sourceId,
         rawDocumentId: parsedData.rawDocumentId,

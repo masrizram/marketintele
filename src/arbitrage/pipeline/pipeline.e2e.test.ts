@@ -348,7 +348,7 @@ describe('End-to-End Arbitrage Pipeline (mocked external boundary)', () => {
     expect(result.opportunity).toBeDefined();
     expect(['RECOMMEND', 'REVIEW', 'REJECT']).toContain(result.opportunity!.decision);
     expect(result.opportunity!.gates).toBeDefined();
-    expect(result.opportunity!.gates.length).toBe(15);
+    expect(result.opportunity!.gates.length).toBe(16);
     expect(result.opportunity!.totalScore).toBeGreaterThanOrEqual(0);
     expect(result.opportunity!.totalScore).toBeLessThanOrEqual(100);
 

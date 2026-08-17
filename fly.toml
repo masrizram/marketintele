@@ -1,0 +1,76 @@
+# ── Fly.io deployment config for the MarketIntele Telegram worker ──────────────
+#
+# Deploys the PERSISTENT long-polling worker (src/index.ts → dist/index.js).
+# Vercel continues to host the stateless API (api/*.ts) — do NOT deploy the
+# worker to Vercel (Phase 19.13: serverless lifecycle incompatible with
+# Telegraf long polling).
+#
+# Single instance only: Telegram allows ONE active getUpdates connection per
+# bot token. A second replica causes 409 Conflict. autoscale is intentionally
+# disabled (min=max=1).
+#
+# Prerequisites (operator, one-time):
+#   1. Create a Fly.io account (credit card required) at https://fly.io/app/sign-up
+#   2. Install flyctl:  npm install -g flyctl   (or: npx flyctl)
+#   3. Authenticate:    flyctl auth login       (browser)
+#      — or set FLY_API_TOKEN from https://fly.io/dashboard/personal/access_tokens
+#   4. Create the app + volume + secrets (see PHASE19_14 section "Deploy"):
+#        flyctl launch --no-deploy --org <your-org>
+#        flyctl volumes create mi_data --region nrt --size 1
+#        flyctl secrets set TELEGRAM_BOT_TOKEN=<token> \
+#                         ALLOWED_USER_IDS=259186465 \
+#                         SUPABASE_DATABASE_URL=<pg-url> \
+#                         WORKER_MODE=true HEALTH_PORT=9090 \
+#                         LOG_LEVEL=info SSRF_FIREWALL_ENABLED=true
+#   5. Deploy:  flyctl deploy
+#
+# NEVER set ALLOWED_USER_IDS empty. NEVER use the bot's Telegram id as the
+# operator id. The verified operator id is 259186465.
+
+app = "marketintele-worker"
+primary_region = "sin"   # Phase 32 region experiment: Singapore to test Lazada anti-bot
+kill_signal = "SIGTERM"
+kill_timeout = 30        # let bot.stop() + pool close + adapter shutdown finish
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  strategy = "rolling"   # avoid downtime; only 1 instance
+
+[env]
+  HEALTH_PORT = "9090"
+  LOG_LEVEL = "info"
+  SSRF_FIREWALL_ENABLED = "true"
+  WORKER_MODE = "true"
+
+# Persistent storage for legacy SQLite (user prefs + promo history).
+# Survives restarts/redeploys. Mounted at /app/data (matches DATABASE_PATH
+# default ./data/belibot.db resolved relative to WORKDIR /app).
+# Phase 32: experimental Singapore volume (mi_data_sin) — original nrt volume
+# (mi_data) is preserved and untouched.
+[[mounts]]
+  source = "mi_data_sin"
+  destination = "/app/data"
+
+# Single instance — NO autoscaling. A second replica would conflict with the
+# single Telegram getUpdates connection (409).
+[vm]
+  size = "shared-cpu-1x"   # ~$2.4/mo base
+  memory = "1gb"           # Chromium browser adapter needs ~400MB headroom (Phase 25)
+
+# Fly-managed health check → restarts the worker if the health server dies.
+[http_service]
+  internal_port = 9090
+  auto_stop_machines = false   # NEVER stop on idle — polling must stay alive
+  auto_start_machines = true
+  min_machines_running = 1     # always keep exactly one running
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 50
+    soft_limit = 20
+
+# Process-level restart policy: always restart the worker if it exits/crashes.
+[restarts]
+  policy = "always"

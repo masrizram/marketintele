@@ -29,6 +29,10 @@ export class TokopediaAdapter extends BaseSourceAdapter {
   readonly trustTier: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'UNKNOWN' = 'MEDIUM';
   readonly isActive = true;
   readonly marketplace = 'tokopedia' as const;
+  /** Phase 19.3: Tokopedia uses HTML scraping — REAL_PUBLIC_WEB. */
+  readonly dataProvenance = 'REAL_PUBLIC_WEB' as const;
+  readonly acquisitionMethod = 'PUBLIC_WEB' as const;
+  readonly reliabilityTier = 'C' as const;
 
   private readonly searchApiUrl = 'https://gql.tokopedia.com/api/v1/graphql';
   private readonly requestTimeoutMs = 15000;
@@ -46,10 +50,9 @@ export class TokopediaAdapter extends BaseSourceAdapter {
     }
 
     try {
-      // Tokopedia uses a GraphQL API for search
       const encodedQuery = encodeURIComponent(query.trim());
 
-      // Try fetching the search results page
+      // Fetch the search results page
       const response = await this.fetchWithRetry(
         `${this.baseUrl}/search?q=${encodedQuery}&sc=product`,
         {
@@ -68,18 +71,23 @@ export class TokopediaAdapter extends BaseSourceAdapter {
 
       if (response.status !== 200) {
         this.logger.error(`[Tokopedia] HTTP ${response.status} on search for "${query}"`);
-        return [];
+        throw new Error(`Tokopedia search page returned HTTP ${response.status} — source may be blocked`);
       }
 
       // Extract product data from the page's embedded JSON
       const results = this.parseSearchResults(response.data as string);
+      if (results.length === 0) {
+        this.logger.warn(`[Tokopedia] No embedded product data found in search page HTML for "${query}" — page is JS-rendered`);
+        throw new Error('Tokopedia search page is JS-rendered (no embedded product data) — GraphQL API requires auth/anti-bot tokens');
+      }
       this.logger.info(`[Tokopedia] Found ${results.length} results for "${query}"`);
       return results as unknown as RawResultSet;
     } catch (err) {
-      this.logger.error(`[Tokopedia] Search error for "${query}":`, {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return [];
+      if (err instanceof Error && (err.message.includes('timeout') || err.message.includes('TIMEOUT'))) {
+        this.logger.error(`[Tokopedia] Timeout searching "${query}"`);
+        throw err;
+      }
+      throw err;
     }
   }
 
@@ -289,7 +297,11 @@ export class TokopediaAdapter extends BaseSourceAdapter {
   }
 
   async normalize(parsedData: ParsedEntity): Promise<CanonicalProduct> {
-    const priceIdr = parsedData.price ?? null;
+    const priceIdr =
+      typeof parsedData.price === 'number' && Number.isFinite(parsedData.price)
+        ? parsedData.price
+        : null;
+    const retrievedAt = new Date().toISOString();
 
     return {
       id: ulid(),
@@ -315,6 +327,9 @@ export class TokopediaAdapter extends BaseSourceAdapter {
       marketplaceListingUrl: null,
       observedAt: parsedData.extractedAt,
       confidence: parsedData.extractionConfidence || 0,
+      dataProvenance: this.dataProvenance,
+      acquisitionMethod: this.acquisitionMethod,
+      retrievedAt,
       dataLineage: {
         sourceId: parsedData.sourceId,
         rawDocumentId: parsedData.rawDocumentId,

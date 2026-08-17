@@ -18,6 +18,7 @@ import { CanonicalProduct } from '../types';
 import { EconomicResult, RiskAssessment, OpportunityResult, OpportunityDecision } from './types';
 import { createRequestLogger } from './logger';
 import { CONFIDENCE_FLOOR } from '../lib/constants';
+import { computeFreshnessStatus, MAX_MARKETPLACE_OBSERVATION_AGE_HOURS, isProductionEligibleProvenance } from '../provenance/data-provenance';
 import type { MarketClearingPriceResult } from '../intelligence/market-clearing';
 import type { DemandResult } from '../intelligence/demand';
 import type { CompetitionResult } from '../intelligence/competition';
@@ -289,20 +290,68 @@ export function decideOpportunity(input: DecisionInput): OpportunityResult {
   }
 
   // ─── C13: DATA_FRESHNESS_WITHIN_TTL (CRITICAL) ─────────────────────────────
-  // IDEA.xml §8: TTL enforcement — data must be within freshness window
-  const freshnessOk = product.observedAt !== null;
+  // IDEA.xml §8: TTL enforcement — data must be within freshness window.
+  // Phase 19.8: Enforce an explicit maximum acceptable age for marketplace
+  // observations. If the observation timestamp is older than
+  // MAX_MARKETPLACE_OBSERVATION_AGE_HOURS, the data is STALE and must NOT
+  // generate a production opportunity.
+  const freshnessTimestamp = product.retrievedAt || product.observedAt;
+  let freshnessOk: boolean;
+  let freshnessDetail: string;
+  if (!freshnessTimestamp) {
+    freshnessOk = false;
+    freshnessDetail = 'observedAt=null (no timestamp)';
+  } else {
+    const freshnessStatus = computeFreshnessStatus(
+      freshnessTimestamp,
+      MAX_MARKETPLACE_OBSERVATION_AGE_HOURS,
+    );
+    freshnessOk = freshnessStatus === 'FRESH';
+    freshnessDetail = `observedAt=${freshnessTimestamp}, freshness=${freshnessStatus}, maxAgeHours=${MAX_MARKETPLACE_OBSERVATION_AGE_HOURS}`;
+  }
   gates.push({
     id: 'C13',
     name: 'Data Freshness Within TTL',
     passed: freshnessOk,
     critical: true,
-    detail: `observedAt=${product.observedAt}`,
+    detail: freshnessDetail,
   });
   if (!freshnessOk) {
-    evidence.push('Data freshness: observation timestamp is null');
+    evidence.push(`STALE_DATA: observation is null or older than ${MAX_MARKETPLACE_OBSERVATION_AGE_HOURS}h — production opportunity blocked (Phase 19.8)`);
   } else {
-    evidence.push('Data freshness: observation timestamp present');
+    evidence.push('Data freshness: observation within TTL');
   }
+
+  // ─── C13b: PROVENANCE_PRODUCTION_ELIGIBLE (CRITICAL) ────────────────────────
+  // Phase 19.3: Only REAL_OFFICIAL_API, REAL_PUBLIC_WEB, and REAL_PUBLIC_ENDPOINT
+  // may participate in production analysis. TEST_FIXTURE, MOCK, and SIMULATION
+  // are prohibited from creating production opportunities.
+  const provenanceCategory = product.dataProvenance;
+  let provenanceOk: boolean;
+  let provenanceDetail: string;
+  if (provenanceCategory === undefined) {
+    // Backwards compatibility: pre-Phase-19 fixtures don't set dataProvenance.
+    // They are treated as non-production-eligible to avoid accidentally promoting
+    // fixture data to production. This is a conservative fail-closed default.
+    provenanceOk = false;
+    provenanceDetail = 'dataProvenance=undefined (not set — treated as non-production)';
+  } else {
+    provenanceOk = isProductionEligibleProvenance(provenanceCategory);
+    provenanceDetail = `dataProvenance=${provenanceCategory}, productionEligible=${provenanceOk}`;
+  }
+  gates.push({
+    id: 'C13b',
+    name: 'Provenance Production Eligible',
+    passed: provenanceOk,
+    critical: true,
+    detail: provenanceDetail,
+  });
+  if (!provenanceOk) {
+    evidence.push(`Provenance not production-eligible — ${provenanceDetail}`);
+  } else {
+    evidence.push(`Provenance production-eligible: ${provenanceCategory}`);
+  }
+
 
   // ─── C14: SENSITIVITY_ROBUSTNESS_PASS (CRITICAL) ────────────────────────────
   // IDEA.xml §31/§32: Sensitivity matrix and stress testing.

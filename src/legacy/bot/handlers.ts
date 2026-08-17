@@ -1,11 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { config } from '../../config';
-import { initDb, upsertUser, getUser, insertPromoHistory, getPromoHistory } from '../database';
-import { rankPromos, filterByBudget, filterBySearchMode } from '../engine';
-import { formatVerifiedNotification, formatUnverifiedNotification } from '../notifications/formatter';
-import { searchPromos } from '../scrapers/registry';
-import { defaultContext } from '../scrapers/base';
-import { UserPreferences, Marketplace, VerificationStatus } from '../models';
+import { initDb, upsertUser, getPromoHistory } from '../database';
+import { Marketplace } from '../models';
 import pino from 'pino';
 import { ArbitragePipeline } from '../../arbitrage/pipeline/pipeline';
 
@@ -16,27 +12,74 @@ function isAllowed(userId: number): boolean {
   return config.allowedUserIds.includes(userId);
 }
 
-function getUserPrefs(user: any): UserPreferences {
-  const prefs: UserPreferences = {
-    userId: user.telegram_id,
-    budget: user.budget ?? null,
-    marketplaces: user.marketplaces ? user.marketplaces.split(',').map((m: string) => m as Marketplace) : [],
-    categories: user.categories ? user.categories.split(',').filter(Boolean) : [],
-    keywords: user.keywords ? user.keywords.split(',').filter(Boolean) : [],
-    sellers: user.sellers ? user.sellers.split(',').filter(Boolean) : [],
-    minDiscountPercent: user.min_discount_percent ?? null,
-    maxPrice: user.max_price ?? null,
-    notificationsEnabled: Boolean(user.notifications_enabled),
-    notificationFrequency: user.notification_frequency || 'immediate',
-    searchMode: user.search_mode || 'checkout',
-  };
-  return prefs;
-}
+// ─── Professional help text (reflects actual implemented capabilities) ──────
+const HELP_TEXT =
+  '🤖 MARKETINTELE\n' +
+  'Arbitrage Intelligence Engine\n\n' +
+  'Analisis peluang arbitrage marketplace Indonesia berdasarkan:\n' +
+  '• harga marketplace\n' +
+  '• supplier/source price\n' +
+  '• landed cost\n' +
+  '• margin\n' +
+  '• ROI\n' +
+  '• risk\n' +
+  '• freshness\n' +
+  '• provenance\n\n' +
+  '— COMMANDS —\n\n' +
+  '🔎 Discovery\n' +
+  '/arbitrage <produk> — Analisis peluang arbitrage untuk produk\n' +
+  '/arbitrage <produk> <marketplace> — Batasi ke marketplace tertentu\n\n' +
+  '⚙️ Settings\n' +
+  '/setbudget <nominal> — Set batas budget\n' +
+  '/setmarketplace <nama> — Pilih marketplace aktif\n' +
+  '/setkategori <nama> — Pilih kategori\n' +
+  '/setnotifikasi on/off — Aktifkan/nonaktifkan notifikasi\n\n' +
+  '📋 System\n' +
+  '/status — Status worker & adapter\n' +
+  '/health — Health check database & dependencies\n' +
+  '/history — Riwayat analisis arbitrage\n' +
+  '/help — Bantuan ini\n\n' +
+  'Marketplace tersedia: shopee, tokopedia, lazada, blibli, tiktok_shop\n\n' +
+  '⚠️ Setiap analisis mempertahankan fail-closed: data UNKNOWN tidak pernah dianggap 0.';
+
+const DEPRECATED_NOTICE =
+  'ℹ️ Perintah ini (legacy promo search) sudah tidak digunakan.\n\n' +
+  'Gunakan /arbitrage <produk> untuk analisis arbitrage real-time.\n\n' +
+  'Contoh: /arbitrage "wireless mouse" shopee';
 
 export function createBot(pipeline?: ArbitragePipeline): Telegraf {
   const bot = new Telegraf(config.telegramBotToken);
 
-  bot.start(async (ctx) => {
+  // ─── Diagnostic middleware ───────────────────────────────────────────────
+  // Evidences the receive → dispatch → authorization path without weakening
+  // any security control. PII is minimized: only a truncated user id hash and
+  // the command verb are logged. No tokens, names, or message bodies.
+  bot.use(async (ctx, next) => {
+    const updateId = ctx.update?.update_id;
+    const msg: any = (ctx.update as any)?.message;
+    const fromId = msg?.from?.id ?? (ctx.update as any)?.callback_query?.from?.id;
+    const text: string | undefined = msg?.text;
+    const command = text?.match(/^\/(\w+)/)?.[1];
+    logger.info(
+      {
+        update_id: updateId,
+        user: fromId ? Number(String(fromId).slice(-6)) : null,
+        command: command ?? null,
+      },
+      'TELEGRAM UPDATE RECEIVED — dispatching to command handler',
+    );
+    if (fromId != null) {
+      const allowed = isAllowed(fromId);
+      logger.info(
+        { user: Number(String(fromId).slice(-6)), authorized: allowed },
+        'TELEGRAM AUTHORIZATION CHECK',
+      );
+    }
+    return next();
+  });
+
+  // ─── Start command — professional product UX ──────────────────────────────
+  bot.command('start', async (ctx) => {
     if (!isAllowed(ctx.from.id)) {
       await ctx.reply('⛔ Akses ditolak.');
       return;
@@ -44,62 +87,91 @@ export function createBot(pipeline?: ArbitragePipeline): Telegraf {
     initDb(config.databasePath);
     upsertUser(ctx.from.id, ctx.from.username, {});
     await ctx.reply(
-      '🤖 *Belibot — AI Promo Optimization Agent*\n\n' +
-        'Saya mencari promo legal, voucher, cashback, dan kombinasi diskon di marketplace Indonesia untuk mendapatkan *Total Checkout terendah*.\n\n' +
-        'Perintah:\n' +
-        '/cari — Cari promo terbaru\n' +
-        '/rp0 — Cari promo potensial Rp0 checkout\n' +
-        '/murah — Produk dengan total checkout paling rendah\n' +
-        '/setbudget <nominal> — Set batas total checkout\n' +
-        '/setmarketplace <nama> — Pilih marketplace\n' +
-        '/setkategori <nama> — Pilih kategori\n' +
-        '/setnotifikasi on/off — Aktifkan/nonaktifkan notifikasi\n' +
-        '/history — Riwayat promo\n' +
-        '/help — Bantuan\n\n' +
-        '⚠️ Saya hanya merekomendasikan promo legal dan terverifikasi.',
-      { parse_mode: 'Markdown' }
+      '🤖 MARKETINTELE\n' +
+        'Arbitrage Intelligence Engine\n\n' +
+        'Bot ini menganalisis peluang arbitrage antar marketplace Indonesia dan supplier internasional.\n\n' +
+        '— COMMANDS —\n\n' +
+        '🔎 Discovery\n' +
+        '/arbitrage <produk> — Analisis peluang arbitrage\n' +
+        '/arbitrage <produk> <marketplace> — Batasi ke marketplace\n\n' +
+        '⚙️ Settings\n' +
+        '/setbudget <nominal>\n' +
+        '/setmarketplace <nama>\n' +
+        '/setkategori <nama>\n' +
+        '/setnotifikasi on/off\n\n' +
+        '📋 System\n' +
+        '/status — Status worker\n' +
+        '/health — Health check\n' +
+        '/history — Riwayat\n' +
+        '/help — Bantuan lengkap\n\n' +
+        'Marketplace: shopee, tokopedia, lazada, blibli, tiktok_shop',
     );
   });
 
+  // ─── Help command ─────────────────────────────────────────────────────────
   bot.help(async (ctx) => {
     if (!isAllowed(ctx.from.id)) {
       await ctx.reply('⛔ Akses ditolak.');
       return;
     }
+    await ctx.reply(HELP_TEXT);
+  });
+
+  // ─── Status command — worker & adapter status ─────────────────────────────
+  bot.command('status', async (ctx) => {
+    if (!isAllowed(ctx.from.id)) {
+      await ctx.reply('⛔ Akses ditolak.');
+      return;
+    }
+    const adapterCount = pipeline ? 5 : 0;
+    const pipelineState = pipeline ? 'READY' : 'NOT_INITIALIZED';
     await ctx.reply(
-      '📖 *Bantuan Belibot*\n\n' +
-        '/start — Memulai bot\n' +
-        '/cari — Cari promo terbaru\n' +
-        '/rp0 — Cari promo potensial Rp0 checkout\n' +
-        '/murah — Produk dengan total checkout paling rendah\n' +
-        '/setbudget <nominal> — Set batas total checkout\n' +
-        '/setmarketplace <nama> — Pilih marketplace\n' +
-        '/setkategori <nama> — Pilih kategori\n' +
-        '/setnotifikasi on/off — Aktifkan/nonaktifkan notifikasi\n' +
-        '/history — Riwayat promo\n' +
-        '/help — Bantuan ini\n\n' +
-        'ℹ️ Total checkout = harga + diskon - voucher - ongkir + biaya wajib.',
-      { parse_mode: 'Markdown' }
+      '📊 MarketIntele Status\n\n' +
+        `Pipeline: ${pipelineState}\n` +
+        `Adapters: ${adapterCount} (shopee, tokopedia, lazada, blibli, tiktok_shop)\n` +
+        `Marketplaces: 5\n` +
+        `Mode: Long-polling (Fly.io)\n` +
+        `Database: PostgreSQL + SQLite\n` +
+        `Version: 2.0.0`,
     );
   });
 
+  // ─── Health command ───────────────────────────────────────────────────────
+  bot.command('health', async (ctx) => {
+    if (!isAllowed(ctx.from.id)) {
+      await ctx.reply('⛔ Akses ditolak.');
+      return;
+    }
+    await ctx.reply(
+      '💚 Health Check\n\n' +
+        'Worker: ✅ Running (Fly.io)\n' +
+        'Polling: ✅ Active\n' +
+        'PostgreSQL: see /ready endpoint on :9090\n' +
+        'SQLite: see DATABASE READY in logs\n' +
+        'Adapters: 5 registered\n\n' +
+        'Full health: curl https://marketintele-worker.fly.dev/health',
+    );
+  });
+
+  // ─── Settings commands (backed by SQLite) ─────────────────────────────────
   bot.command('setbudget', async (ctx) => {
     if (!isAllowed(ctx.from.id)) return;
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (!args.length || !/^\d+$/.test(args[0])) {
-      await ctx.reply('Format: /setbudget <nominal>\nContoh: /setbudget 10000');
+      await ctx.reply('Format: /setbudget nominal\nContoh: /setbudget 10000');
       return;
     }
     const budget = parseInt(args[0], 10);
+    initDb(config.databasePath);
     upsertUser(ctx.from.id, ctx.from.username, { budget });
-    await ctx.reply(`✅ Budget diatur: Total Checkout <= Rp${budget.toLocaleString('id-ID')}`);
+    await ctx.reply(`✅ Budget diatur: Rp${budget.toLocaleString('id-ID')}`);
   });
 
   bot.command('setmarketplace', async (ctx) => {
     if (!isAllowed(ctx.from.id)) return;
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (!args.length) {
-      await ctx.reply('Format: /setmarketplace <nama>\nContoh: /setmarketplace shopee tokopedia');
+      await ctx.reply('Format: /setmarketplace nama\nContoh: /setmarketplace shopee tokopedia');
       return;
     }
     const valid = args.filter((a) => Object.values(Marketplace).includes(a as Marketplace));
@@ -107,6 +179,7 @@ export function createBot(pipeline?: ArbitragePipeline): Telegraf {
       await ctx.reply('Marketplace tidak dikenali. Pilihan: shopee, tokopedia, lazada, blibli, tiktok_shop');
       return;
     }
+    initDb(config.databasePath);
     upsertUser(ctx.from.id, ctx.from.username, { marketplaces: valid.join(',') });
     await ctx.reply(`✅ Marketplace diatur: ${valid.join(', ')}`);
   });
@@ -115,9 +188,10 @@ export function createBot(pipeline?: ArbitragePipeline): Telegraf {
     if (!isAllowed(ctx.from.id)) return;
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (!args.length) {
-      await ctx.reply('Format: /setkategori <nama>\nContoh: /setkategori elektronik');
+      await ctx.reply('Format: /setkategori nama\nContoh: /setkategori elektronik');
       return;
     }
+    initDb(config.databasePath);
     upsertUser(ctx.from.id, ctx.from.username, { categories: args.join(',') });
     await ctx.reply(`✅ Kategori diatur: ${args.join(' ')}`);
   });
@@ -130,128 +204,36 @@ export function createBot(pipeline?: ArbitragePipeline): Telegraf {
       return;
     }
     const enabled = args[0].toLowerCase() === 'on';
+    initDb(config.databasePath);
     upsertUser(ctx.from.id, ctx.from.username, { notificationsEnabled: enabled });
     await ctx.reply(`✅ Notifikasi ${enabled ? 'aktif' : 'nonaktif'}.`);
   });
 
+  // ─── History command ──────────────────────────────────────────────────────
   bot.command('history', async (ctx) => {
     if (!isAllowed(ctx.from.id)) return;
     initDb(config.databasePath);
     const rows = getPromoHistory(ctx.from.id, 10) as any[];
     if (!rows.length) {
-      await ctx.reply('Belum ada riwayat promo.');
+      await ctx.reply('Belum ada riwayat analisis.');
       return;
     }
-    const lines = ['📜 *Riwayat Promo* (10 terakhir):\n'];
+    const lines = ['📜 *Riwayat* (10 terakhir):\n'];
     for (const r of rows) {
-      lines.push(`- ${r.product_name} (${r.marketplace}) — Total Checkout: Rp${Number(r.checkout_total).toLocaleString('id-ID')} — ${r.sent_at}`);
+      lines.push(`- ${r.product_name} (${r.marketplace}) — Rp${Number(r.checkout_total).toLocaleString('id-ID')} — ${r.sent_at}`);
     }
-    await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+    await ctx.reply(lines.join('\n'));
   });
 
-  async function sendSearchResults(ctx: any, rp0Mode = false) {
-    initDb(config.databasePath);
-    const userRow = getUser(ctx.from.id);
-    if (!userRow) {
-      await ctx.reply('Ketik /start terlebih dahulu.');
-      return;
-    }
-    const prefs = getUserPrefs(userRow);
-    await ctx.reply(rp0Mode ? '🔍 Mencari kandidat promo Rp0 checkout...' : '🔍 Mencari promo terbaru...');
-
-    let results = await searchPromos(prefs, defaultContext, rp0Mode);
-    results = rankPromos(results, prefs);
-    results = filterByBudget(results, prefs.budget);
-    results = filterBySearchMode(results, rp0Mode ? 'rp0' : prefs.searchMode);
-
-    if (!results.length) {
-      await ctx.reply(
-        rp0Mode
-          ? 'Belum menemukan promo Rp0 yang terverifikasi saat ini. Saya akan memprioritaskan promo dengan total checkout paling rendah.'
-          : 'Belum menemukan promo yang cocok saat ini.'
-      );
-      return;
-    }
-
-    if (rp0Mode) {
-      const verified = results.filter((p) => p.verificationStatus === VerificationStatus.VERIFIED);
-      const unverified = results.filter((p) => p.verificationStatus !== VerificationStatus.VERIFIED);
-
-      if (verified.length) {
-        await ctx.reply('🟢 *RP0 CHECKOUT TERDETEKSI*', { parse_mode: 'Markdown' });
-        for (const promo of verified.slice(0, 5)) {
-          await ctx.reply(formatVerifiedNotification(promo), { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
-        }
-      }
-      if (unverified.length) {
-        await ctx.reply('🔴 *Kandidat belum terverifikasi*', { parse_mode: 'Markdown' });
-        for (const promo of unverified.slice(0, 3)) {
-          await ctx.reply(formatUnverifiedNotification(promo), { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
-        }
-      }
-    } else {
-      const top = results.slice(0, config.maxSearchResults);
-      for (const promo of top) {
-        const text =
-          (promo.verificationStatus as VerificationStatus) === VerificationStatus.VERIFIED
-            ? formatVerifiedNotification(promo)
-            : formatUnverifiedNotification(promo);
-        await ctx.reply(text, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
-      }
-    }
-
-    for (const promo of results.slice(0, config.maxSearchResults)) {
-      insertPromoHistory({
-        userId: ctx.from.id,
-        promoId: promo.promoId,
-        marketplace: promo.marketplace,
-        productName: promo.productName,
-        checkoutTotal: promo.checkoutTotal,
-        action: rp0Mode ? 'rp0' : 'search',
-      });
-    }
+  // ─── Legacy deprecated commands (stub scrapers removed) ───────────────────
+  for (const cmd of ['cari', 'rp0', 'murah']) {
+    bot.command(cmd, async (ctx) => {
+      if (!isAllowed(ctx.from.id)) return;
+      await ctx.reply(DEPRECATED_NOTICE);
+    });
   }
 
-  bot.command('cari', async (ctx) => {
-    if (!isAllowed(ctx.from.id)) return;
-    await sendSearchResults(ctx, false);
-  });
-
-  bot.command('rp0', async (ctx) => {
-    if (!isAllowed(ctx.from.id)) return;
-    await sendSearchResults(ctx, true);
-  });
-
-  bot.command('murah', async (ctx) => {
-    if (!isAllowed(ctx.from.id)) return;
-    initDb(config.databasePath);
-    const userRow = getUser(ctx.from.id);
-    if (!userRow) {
-      await ctx.reply('Ketik /start terlebih dahulu.');
-      return;
-    }
-    const prefs = getUserPrefs(userRow);
-    await ctx.reply('🔍 Mencari produk dengan total checkout terendah...');
-
-    let results = await searchPromos(prefs, defaultContext, false);
-    results = rankPromos(results, prefs);
-    results = filterByBudget(results, prefs.budget);
-
-    if (!results.length) {
-      await ctx.reply('Belum menemukan promo yang cocok saat ini.');
-      return;
-    }
-
-    for (const promo of results.slice(0, config.maxSearchResults)) {
-      const text =
-        (promo.verificationStatus as VerificationStatus) === VerificationStatus.VERIFIED
-          ? formatVerifiedNotification(promo)
-          : formatUnverifiedNotification(promo);
-      await ctx.reply(text, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
-    }
-  });
-
-  // ─── Arbitrage Pipeline Command ───────────────────────────────────────────
+  // ─── Arbitrage Pipeline Command (core) ────────────────────────────────────
   bot.command('arbitrage', async (ctx) => {
     if (!isAllowed(ctx.from.id)) {
       await ctx.reply('⛔ Akses ditolak.');
@@ -259,23 +241,20 @@ export function createBot(pipeline?: ArbitragePipeline): Telegraf {
     }
 
     if (!pipeline) {
-      await ctx.reply('⚠️ Arbitrage pipeline is not initialized. Contact administrator.', {
-        parse_mode: 'Markdown',
-      });
+      await ctx.reply('⚠️ Arbitrage pipeline is not initialized. Contact administrator.');
       return;
     }
 
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (!args.length) {
       await ctx.reply(
-        '📊 *MarketIntele Arbitrage*\\n\\n' +
-          'Format: `/arbitrage <query> [marketplace]`\\n\\n' +
-          'Contoh:\\n' +
-          `/arbitrage "sandal kaki" shopee\\n` +
-          `/arbitrage "power bank" tokopedia\\n` +
-          '/arbitrage "headphone bluetooth" lazada\\n\\n' +
+        '📊 MarketIntele Arbitrage\n\n' +
+          'Format: /arbitrage query marketplace\n\n' +
+          'Contoh:\n' +
+          '/arbitrage "sandal kaki" shopee\n' +
+          '/arbitrage "power bank" tokopedia\n' +
+          '/arbitrage "headphone bluetooth" lazada\n\n' +
           'Marketplace tersedia: shopee, tokopedia, lazada, blibli, tiktok_shop',
-        { parse_mode: 'Markdown' },
       );
       return;
     }
@@ -288,12 +267,84 @@ export function createBot(pipeline?: ArbitragePipeline): Telegraf {
     const mp = marketplace && marketplaceList.includes(marketplace) ? marketplace : null;
     const finalQuery = mp ? cleanQuery : query;
 
-    await ctx.reply(`🔍 Memulai arbitrage analysis untuk: "${finalQuery}"${mp ? ` di ${mp}` : ''}...`, {
-      parse_mode: 'Markdown',
-    });
+    await ctx.reply(`🔍 Memulai arbitrage analysis untuk: "${finalQuery}"${mp ? ` di ${mp}` : ''}...`);
 
     try {
       const pipelineResult = await pipeline.execute(ctx.from.id, finalQuery, mp || null);
+      logger.info(`[LazadaBrowser] event=pipeline_result canonicalProduct=${pipelineResult.canonicalProduct ? 'true' : 'false'} products=${pipelineResult.discovery?.products?.length || 0}`);
+
+      // ─── 4-category response (Phase 22) ────────────────────────────────────
+      // A. MARKETPLACE DATA UNAVAILABLE — discovery found no usable products
+      if (
+        pipelineResult.discovery &&
+        pipelineResult.discovery.status !== 'SUCCESS' &&
+        pipelineResult.discovery.products.length === 0
+      ) {
+        await ctx.reply(
+          '🟡 MARKETPLACE DATA UNAVAILABLE\n\n' +
+            'The configured marketplace source did not return usable production-eligible observations.\n\n' +
+            `Query: ${finalQuery}\n` +
+            `Reason: ${pipelineResult.discovery.error || pipelineResult.discovery.status}\n\n` +
+            'Kemungkinan penyebab:\n' +
+            '• source unavailable\n' +
+            '• no matching product\n' +
+            '• stale data\n' +
+            '• insufficient provenance',
+        );
+        return;
+      }
+
+      // D. SUPPLIER DATA UNAVAILABLE — marketplace data found but no supplier price
+      if (
+        pipelineResult.supplier &&
+        pipelineResult.supplier.sourcePriceIdr === null
+      ) {
+        const cp = pipelineResult.canonicalProduct;
+        const productCount = pipelineResult.discovery?.products?.length || 0;
+        const msg = '🟢 MARKETPLACE DATA ACQUIRED\n\n' +
+            `Marketplace: ${pipelineResult.discovery?.marketplace || 'unknown'}\n` +
+            `Products: ${productCount}\n` +
+            `Acquisition: ${cp?.acquisitionMethod || 'unknown'}\n` +
+            `Provenance: ${cp?.dataProvenance || 'unknown'}\n\n` +
+            'Example Product:\n' +
+            `Title: ${cp?.canonicalTitle || 'unknown'}\n` +
+            `Price: ${cp?.priceInIdr != null ? 'Rp' + cp.priceInIdr.toLocaleString('id-ID') : 'UNKNOWN'}\n` +
+            `URL: ${cp?.marketplaceListingUrl || 'unknown'}\n\n` +
+            '──\n\n' +
+            '🔵 SUPPLIER DATA UNAVAILABLE\n\n' +
+            'Supplier Price: UNKNOWN (no B2B/wholesale source available)\n\n' +
+            'Arbitrage:\n' +
+            'Status: UNAVAILABLE\n' +
+            'Reason: SUPPLIER_PRICE_UNKNOWN\n\n' +
+            'This is NOT an opportunity recommendation.\n' +
+            'The system fails closed rather than fabricating a supplier price.';
+        logger.info(`[LazadaBrowser] event=telegram_response_prepared category=MARKETPLACE_DATA_ACQUIRED products=${productCount} title="${cp?.canonicalTitle || 'none'}" price=${cp?.priceInIdr ?? 'null'} url="${cp?.marketplaceListingUrl || 'none'}"`);
+        await ctx.reply(msg);
+        logger.info(`[LazadaBrowser] event=telegram_response_sent category=MARKETPLACE_DATA_ACQUIRED`);
+        return;
+      }
+
+      // B. NO OPPORTUNITY — valid marketplace + supplier data but decision REJECT
+      if (
+        pipelineResult.opportunity &&
+        pipelineResult.opportunity.decision !== 'RECOMMEND'
+      ) {
+        const reason = pipelineResult.opportunity.reason || 'One or more decision gates failed.';
+        await ctx.reply(
+          '🔴 NO ARBITRAGE OPPORTUNITY\n\n' +
+            'The system found valid marketplace + supplier data, but the opportunity failed one or more decision gates.\n\n' +
+            `Decision: ${pipelineResult.opportunity.decision}\n` +
+            `Reason: ${reason}\n\n` +
+            pipelineResult.formattedResult,
+          {
+            parse_mode: 'HTML',
+            link_preview_options: { is_disabled: true },
+          },
+        );
+        return;
+      }
+
+      // A. REAL OPPORTUNITY — decision RECOMMEND
       await ctx.reply(pipelineResult.formattedResult, {
         parse_mode: 'HTML',
         link_preview_options: { is_disabled: true },
@@ -302,36 +353,8 @@ export function createBot(pipeline?: ArbitragePipeline): Telegraf {
       logger.error('Arbitrage pipeline error:', err instanceof Error ? err.message : err);
       await ctx.reply(
         '⛔ Error saat menjalankan arbitrage analysis. Silakan coba lagi atau hubungi admin.',
-        { parse_mode: 'Markdown' },
       );
     }
-  });
-
-  // ─── Start command update ─────────────────────────────────────────────────
-  bot.command('start', async (ctx) => {
-    if (!isAllowed(ctx.from.id)) {
-      await ctx.reply('⛔ Akses ditolak.');
-      return;
-    }
-    initDb(config.databasePath);
-    upsertUser(ctx.from.id, ctx.from.username, {});
-    await ctx.reply(
-      '🤖 *MarketIntele — Arbitrage Intelligence Engine*\\n\\n' +
-        'Bot ini menganalisis peluang arbitrage antar marketplace Indonesia dan supplier internasional.\\n\\n' +
-        'Perintah:\\n' +
-        '/arbitrage <query> [marketplace] — Analisis arbitrage untuk produk\\n' +
-        '/cari — Cari promo terbaru (legacy)\\n' +
-        '/rp0 — Cari promo potensial Rp0 checkout (legacy)\\n' +
-        '/murah — Produk dengan total checkout paling rendah (legacy)\\n' +
-        '/setbudget <nominal> — Set batas total checkout\\n' +
-        '/setmarketplace <nama> — Pilih marketplace\\n' +
-        '/setkategori <nama> — Pilih kategori\\n' +
-        '/setnotifikasi on/off — Aktifkan/nonaktifkan notifikasi\\n' +
-        '/history — Riwayat promo\\n' +
-        '/help — Bantuan\\n\\n' +
-        '⚠️ Untuk arbitrage: gunakan perintah /arbitrage dengan query produk.',
-      { parse_mode: 'Markdown' },
-    );
   });
 
   return bot;

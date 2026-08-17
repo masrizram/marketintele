@@ -1,99 +1,87 @@
 {
-  "name": "marketintele",
-  "version": "2.0.0",
-  "description": "AI Product Sourcing & Marketplace Arbitrage Intelligence Engine — Indonesia",
-  "main": "dist/index.js",
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "build:api": "tsc -p tsconfig.api.json",
-    "start": "node dist/index.js",
-    "lint": "eslint src --ext .ts",
-    "typecheck": "tsc --noEmit",
-    "typecheck:api": "tsc -p tsconfig.api.json --noEmit",
-    "test": "jest --passWithNoTests",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
-    "migrate": "tsx src/arbitrage/db/migrate.ts",
-    "verify:supabase": "tsx src/arbitrage/db/verify-supabase.ts",
-    "schema:audit": "tsx scripts/schema-audit.ts",
-    "seed": "tsx src/arbitrage/db/seed.ts"
-  },
-  "dependencies": {
-    "axios": "^1.6.7",
-    "axios-retry": "^3.9.0",
-    "better-sqlite3": "^13.0.3",
-    "cheerio": "^1.0.0-rc.12",
-    "decimal.js": "^10.4.3",
-    "dotenv": "^16.4.1",
-    "pg": "^8.11.3",
-    "pino": "^8.17.0",
-    "telegraf": "^4.16.3",
-    "ulid": "^2.3.0",
-    "zod": "^3.22.4"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^9.6.0",
-    "@types/jest": "^30.0.0",
-    "@types/node": "^20.11.16",
-    "@types/pg": "^8.11.10",
-    "@typescript-eslint/eslint-plugin": "^6.21.0",
-    "@typescript-eslint/parser": "^6.21.0",
-    "@vercel/node": "^5.10.1",
-    "eslint": "^8.56.0",
-    "jest": "^30.4.2",
-    "ts-jest": "^29.4.12",
-    "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
-  },
-  "engines": {
-    "node": ">=20.0.0"
-  },
-  "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
-    "testTimeout": 20000,
-    "setupFiles": [
-      "dotenv/config"
-    ],
-    "testMatch": [
-      "**/src/**/*.test.ts",
-      "**/api/**/*.test.ts"
-    ],
-    "collectCoverageFrom": [
-      "src/**/*.ts",
-      "api/**/*.ts",
-      "!src/**/*.test.ts",
-      "!api/**/*.test.ts",
-      "!src/**/index.ts",
-      "!src/legacy/database/index.ts",
-      "!src/legacy/**",
-      "!src/config.ts",
-      "!src/arbitrage/db/migrate.ts",
-      "!src/arbitrage/db/verify-supabase.ts",
-      "!src/arbitrage/lib/types.ts",
-      "!src/arbitrage/benchmark/benchmark.ts",
-      "!src/arbitrage/adapters/shopee-adapter.ts",
-      "!src/arbitrage/adapters/tokopedia-adapter.ts",
-      "!src/arbitrage/adapters/lazada-adapter.ts",
-      "!src/arbitrage/adapters/blibli-adapter.ts",
-      "!src/arbitrage/adapters/tiktokshop-adapter.ts",
-      "!api/live.ts",
-      "!api/ready.ts",
-      "!api/health.ts",
-      "!api/metrics.ts",
-      "!api/opportunities.ts",
-      "!api/suppliers.ts",
-      "!api/products.ts",
-      "!api/audit.ts"
-    ],
-    "coverageThreshold": {
-      "global": {
-        "branches": 70,
-        "functions": 80,
-        "lines": 80,
-        "statements": 80
-      }
+    "name": "marketintele",
+    "version": "2.0.0",
+    "description": "AI Product Sourcing & Marketplace Arbitrage Intelligence Engine — Indonesia",
+    "main": "dist/index.js",
+    "scripts": {
+        "dev": "tsx watch src/index.ts",
+        "build": "tsc",
+        "start": "node dist/index.js",
+        "lint": "eslint src --ext .ts",
+        "typecheck": "tsc --noEmit",
+        "test": "jest --passWithNoTests",
+        "test:watch": "jest --watch",
+        "test:coverage": "jest --coverage",
+        "migrate": "tsx src/arbitrage/db/migrate.ts",
+        "verify:supabase": "tsx src/arbitrage/db/verify-supabase.ts",
+        "schema:audit": "tsx scripts/schema-audit.ts",
+        "seed": "tsx src/arbitrage/db/seed.ts"
+    },
+    "dependencies": {
+        "axios": "^1.6.7",
+        "axios-retry": "^3.9.0",
+        "better-sqlite3": "^13.0.3",
+        "cheerio": "^1.0.0-rc.12",
+        "decimal.js": "^10.4.3",
+        "dotenv": "^16.4.1",
+        "pg": "^8.11.3",
+        "pino": "^8.17.0",
+        "telegraf": "^4.16.3",
+        "ulid": "^2.3.0",
+        "ws": "^8.16.0",
+        "zod": "^3.22.4"
+    },
+    "devDependencies": {
+        "@types/better-sqlite3": "^9.6.0",
+        "@types/jest": "^30.0.0",
+        "@types/node": "^20.11.16",
+        "@types/pg": "^8.11.10",
+        "@types/ws": "^8.18.1",
+        "@typescript-eslint/eslint-plugin": "^6.21.0",
+        "@typescript-eslint/parser": "^6.21.0",
+        "eslint": "^8.56.0",
+        "jest": "^30.4.2",
+        "ts-jest": "^29.4.12",
+        "tsx": "^4.7.0",
+        "typescript": "^5.3.3"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    },
+    "jest": {
+        "preset": "ts-jest",
+        "testEnvironment": "node",
+        "testTimeout": 20000,
+        "setupFiles": [
+            "dotenv/config"
+        ],
+        "testMatch": [
+            "**/src/**/*.test.ts"
+        ],
+        "collectCoverageFrom": [
+            "src/**/*.ts",
+            "!src/**/*.test.ts",
+            "!src/**/index.ts",
+            "!src/legacy/database/index.ts",
+            "!src/legacy/**",
+            "!src/config.ts",
+            "!src/arbitrage/db/migrate.ts",
+            "!src/arbitrage/db/verify-supabase.ts",
+            "!src/arbitrage/lib/types.ts",
+            "!src/arbitrage/benchmark/benchmark.ts",
+            "!src/arbitrage/adapters/shopee-adapter.ts",
+            "!src/arbitrage/adapters/tokopedia-adapter.ts",
+            "!src/arbitrage/adapters/lazada-adapter.ts",
+            "!src/arbitrage/adapters/blibli-adapter.ts",
+            "!src/arbitrage/adapters/tiktokshop-adapter.ts"
+        ],
+        "coverageThreshold": {
+            "global": {
+                "branches": 70,
+                "functions": 80,
+                "lines": 80,
+                "statements": 80
+            }
+        }
     }
-  }
 }

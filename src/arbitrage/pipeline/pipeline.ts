@@ -38,7 +38,7 @@ import { recordPipelineRun, recordOpportunityDecision, metricsRegistry } from '.
 export class ArbitragePipeline {
   private readonly discoveryTimeoutMs: number;
 
-  constructor(timeoutMs: number = 30000) {
+  constructor(timeoutMs: number = 90000) {
     this.discoveryTimeoutMs = timeoutMs;
   }
 
@@ -458,6 +458,7 @@ export class ArbitragePipeline {
 
     result.elapsedMs = Date.now() - startTime;
     result.formattedResult = formatPipelineResult(result, reqLogger);
+    reqLogger.info(`event=pipeline_result canonicalProduct=${result.canonicalProduct ? 'true' : 'false'} hasSupplier=${result.supplier ? 'true' : 'false'} supplierPriceIdr=${result.supplier?.sourcePriceIdr ?? 'null'} elapsedMs=${result.elapsedMs}`);
 
     // Record metrics (IDEA §49 / AUDIT §50)
     const success = result.error === null && result.opportunity !== null;

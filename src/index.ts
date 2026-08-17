@@ -105,11 +105,34 @@ async function bootstrap(): Promise<void> {
   try {
     const bot = createBot(arbitragePipeline);
     logger.info('TELEGRAM INITIALIZED — Bot created');
+
+    // Surface Telegraf handler errors instead of letting the default handler
+    // kill the process. The default handleError() calls process.exit(1) and
+    // throws, which terminates the worker on any single handler exception.
+    bot.catch((err, ctx) => {
+      logger.error(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          update_id: ctx?.update?.update_id,
+        },
+        'TELEGRAM HANDLER ERROR — update processing threw',
+      );
+    });
+
     logger.info('BOT READY — All systems operational');
 
     // Graceful shutdown
+    let shuttingDown = false;
     const shutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       logger.info(`Received ${signal}. Shutting down gracefully...`);
+      try {
+        bot.stop(signal);
+        logger.info('TELEGRAM STOPPED — Polling stopped');
+      } catch (err) {
+        logger.error('Error stopping Telegram bot:', err instanceof Error ? err.message : err);
+      }
       try {
         await stopHealthServer(healthServer);
       } catch (err) {
@@ -120,7 +143,6 @@ async function bootstrap(): Promise<void> {
       } catch (err) {
         logger.error('Error closing PostgreSQL pool:', err instanceof Error ? err.message : err);
       }
-      bot.stop('SIGTERM');
       await adapterRegistry.shutdownAll();
       logger.info('Shutdown complete.');
       process.exit(0);
@@ -129,10 +151,28 @@ async function bootstrap(): Promise<void> {
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-    // Start polling
-    await bot.launch();
+    // Telegraf's bot.launch() performs getMe, deleteWebhook, then starts the
+    // long-polling loop via Polling.loop(). Polling.loop() only resolves when
+    // polling is stopped (it iterates `while (!aborted)`), so awaiting
+    // launch() would block the bootstrap indefinitely and the ready logs would
+    // never print while the bot is running.
+    //
+    // Intentionally NOT awaited: launch() resolves connectivity + starts the
+    // polling loop in the background. We attach a rejection handler so a
+    // launch failure (e.g. 401 Unauthorized / 409 Conflict) is logged and the
+    // worker exits instead of running with a dead polling loop.
+    const launchPromise = bot.launch();
+    launchPromise.catch((err) => {
+      logger.error(
+        'TELEGRAM POLLING FAILURE — bot.launch() rejected:',
+        err instanceof Error ? err.message : err,
+      );
+      process.exit(1);
+    });
+
     logger.info('SERVER STARTED — Bot is now listening for commands');
-    logger.info('LISTENING — Awaiting Telegram commands');
+    logger.info('LISTENING — Long-polling active, awaiting Telegram updates');
+    logger.info('TELEGRAM POLLING ACTIVE — receive → dispatch → handler path open');
   } catch (err) {
     logger.error('TELEGRAM FAILED — Could not start Telegram bot:', err instanceof Error ? err.message : err);
     process.exit(1);

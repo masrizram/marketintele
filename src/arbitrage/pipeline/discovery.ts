@@ -16,7 +16,7 @@ import {
 import { createRequestLogger } from './logger';
 
 export class DiscoveryService {
-  private readonly defaultTimeoutMs = 30000;
+  private readonly defaultTimeoutMs = 90000;
 
   /**
    * Run discovery for a given query and marketplace.
@@ -94,7 +94,7 @@ export class DiscoveryService {
       const errorMsg = err instanceof Error ? err.message : String(err);
 
       if (errorMsg.includes('timeout')) {
-        reqLogger.error('Discovery timed out', { marketplace, elapsedMs });
+        reqLogger.error('Discovery timed out', { marketplace, elapsedMs, adapterName: adapter.adapterName });
         return {
           requestId: context.requestId,
           status: 'TIMEOUT',
@@ -111,7 +111,13 @@ export class DiscoveryService {
         };
       }
 
-      reqLogger.error('Discovery source error', { marketplace, error: errorMsg });
+      reqLogger.error('Discovery source error', {
+        marketplace,
+        error: errorMsg,
+        adapterName: adapter.adapterName,
+        sourceUrl: adapter.baseUrl,
+        elapsedMs,
+      });
       return {
         requestId: context.requestId,
         status: 'SOURCE_ERROR',
@@ -149,44 +155,61 @@ export class DiscoveryService {
 
     reqLogger.info('Discovery found raw results', { count: rawResults.length, marketplace });
 
-    // Fetch + parse + normalize the top results (limit to 5 for performance)
+    // Normalize the top results (limit to 5 for performance)
+    // Browser adapters (e.g. LazadaBrowserAdapter) return pre-extracted products
+    // from search() — no fetch/parse cycle needed. They implement normalize()
+    // to convert raw results directly into CanonicalProduct.
     const products: CanonicalProduct[] = [];
     const maxProducts = Math.min(rawResults.length, 5);
 
+    // Check if the adapter supports fetch (browser adapters throw 'Not supported')
+    let adapterSupportsFetch = true;
+    try {
+      await adapter.fetch(rawResults[0] as any);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Not supported')) {
+        adapterSupportsFetch = false;
+        reqLogger.info('Adapter does not support fetch — using direct normalize path', { adapter: adapter.adapterName });
+      }
+    }
+
     for (let i = 0; i < maxProducts; i++) {
       const rawItem = rawResults[i] as any;
-      if (!rawItem || !rawItem.url) {
+      if (!rawItem) {
         continue;
       }
 
       try {
-        // Fetch the product page
-        const rawPayload = await adapter.fetch(rawItem.url);
+        let canonical: CanonicalProduct;
 
-        // Create a RawDocument
-        const rawDocument: any = {
-          id: rawPayload.url, // use URL as ID for simplicity
-          sourceId: adapter.adapterName,
-          url: rawPayload.url,
-          observedAt: rawPayload.observedAt,
-          httpStatus: rawPayload.statusCode,
-          contentType: rawPayload.contentType,
-          contentHash: sha256(rawPayload.body),
-          parserVersion: 'v1.0',
-          rawPayload: rawPayload.body,
-        };
-
-        // Parse
-        const parsed = await adapter.parse(rawDocument as any);
-        if (!parsed.entities || parsed.entities.length === 0) {
-          reqLogger.warn('Parse returned no entities', { url: rawItem.url });
-          continue;
+        if (adapterSupportsFetch) {
+          // HTTP adapter path: fetch → parse → normalize
+          if (!rawItem.url) continue;
+          const rawPayload = await adapter.fetch(rawItem.url);
+          const rawDocument: any = {
+            id: rawPayload.url,
+            sourceId: adapter.adapterName,
+            url: rawPayload.url,
+            observedAt: rawPayload.observedAt,
+            httpStatus: rawPayload.statusCode,
+            contentType: rawPayload.contentType,
+            contentHash: sha256(rawPayload.body),
+            parserVersion: 'v1.0',
+            rawPayload: rawPayload.body,
+          };
+          const parsed = await adapter.parse(rawDocument as any);
+          if (!parsed.entities || parsed.entities.length === 0) {
+            reqLogger.warn('Parse returned no entities', { url: rawItem.url });
+            continue;
+          }
+          canonical = await adapter.normalize(parsed.entities[0]);
+        } else {
+          // Browser adapter path: directly normalize the raw product object
+          canonical = await adapter.normalize(rawItem as any);
         }
 
-        // Normalize (use the first/strongest entity)
-        const canonical = await adapter.normalize(parsed.entities[0]);
         if (!canonical) {
-          reqLogger.warn('Normalize returned null', { url: rawItem.url });
+          reqLogger.warn('Normalize returned null', { index: i });
           continue;
         }
 
@@ -196,10 +219,12 @@ export class DiscoveryService {
           title: canonical.canonicalTitle,
           priceInIdr: canonical.priceInIdr,
           confidence: canonical.confidence,
+          provenance: canonical.dataProvenance,
+          acquisition: canonical.acquisitionMethod,
         });
       } catch (err) {
-        reqLogger.warn('Failed to fetch/parse/normalize product', {
-          url: rawItem.url,
+        reqLogger.warn('Failed to normalize product', {
+          index: i,
           error: err instanceof Error ? err.message : String(err),
         });
         // Continue with other products
@@ -207,11 +232,13 @@ export class DiscoveryService {
     }
 
     const elapsedMs = Date.now() - start;
+    reqLogger.info(`event=normalization_completed count=${products.length} elapsedMs=${elapsedMs}`);
     reqLogger.info('Discovery completed', {
       status: products.length > 0 ? 'SUCCESS' : 'EMPTY_RESULT',
       productsFound: products.length,
       elapsedMs,
     });
+    reqLogger.info(`event=discovery_completed count=${products.length} status=${products.length > 0 ? 'SUCCESS' : 'EMPTY_RESULT'} elapsedMs=${elapsedMs}`);
 
     return {
       requestId: context.requestId,

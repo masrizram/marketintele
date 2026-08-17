@@ -28,6 +28,10 @@ export class TikTokShopAdapter extends BaseSourceAdapter {
   readonly trustTier: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'UNKNOWN' = 'MEDIUM';
   readonly isActive = true;
   readonly marketplace = 'tiktok_shop' as const;
+  /** Phase 19.3: TikTok Shop uses HTML scraping — REAL_PUBLIC_WEB. */
+  readonly dataProvenance = 'REAL_PUBLIC_WEB' as const;
+  readonly acquisitionMethod = 'PUBLIC_WEB' as const;
+  readonly reliabilityTier = 'C' as const;
 
   private readonly requestTimeoutMs = 15000;
 
@@ -103,7 +107,7 @@ export class TikTokShopAdapter extends BaseSourceAdapter {
               results.push({
                 url: hit.url || hit.detailUrl || hit.productUrl || (product ? `https://www.tiktok.com/product/${product.goodsId || product.productId}` : ''),
                 title: product?.title || product?.name || hit.title || '',
-                price: product?.price ? Number(product.price) / 100000 : (hit.price ? Number(hit.price) : null),
+                price: this.toMicroPrice(product?.price) ?? (hit.price != null ? this.toMicroPrice(hit.price) : null),
                 currency: 'IDR',
                 seller: product?.sellerName || product?.merchantName || hit.sellerName || null,
                 sellerId: product?.merchantId ? String(product.merchantId) : null,
@@ -134,7 +138,7 @@ export class TikTokShopAdapter extends BaseSourceAdapter {
             results.push({
               url: data.url || '',
               title: data.name || '',
-              price: data.offers?.price ? Number(data.offers.price) : null,
+              price: data.offers?.price ? this.toFiniteNumber(data.offers.price) : null,
               currency: data.offers?.priceCurrency || 'IDR',
               seller: null,
               sellerId: null,
@@ -153,6 +157,21 @@ export class TikTokShopAdapter extends BaseSourceAdapter {
     }
 
     return results;
+  }
+
+  private toFiniteNumber(value: unknown): number | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'string' && value.trim() !== '') {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  }
+
+  private toMicroPrice(value: unknown): number | null {
+    const n = this.toFiniteNumber(value);
+    return n === null ? null : n / 100000;
   }
 
   async fetch(target: string): Promise<RawPayload> {
@@ -272,7 +291,7 @@ export class TikTokShopAdapter extends BaseSourceAdapter {
       sku: info.sku || info.code || null,
       barcode: info.barcode || info.ean || info.upc || null,
       category: info.categoryId ? String(info.categoryId) : (info.category ? String(info.category) : null),
-      price: info.price ? Number(info.price) : (info.skuPrice ? Number(info.skuPrice) : null),
+      price: info.price ? this.toFiniteNumber(info.price) : (info.skuPrice ? this.toFiniteNumber(info.skuPrice) : null),
       currency: info.currency || 'IDR',
       moq: 1,
       packageQuantity: 1,
@@ -303,7 +322,11 @@ export class TikTokShopAdapter extends BaseSourceAdapter {
   }
 
   async normalize(parsedData: ParsedEntity): Promise<CanonicalProduct> {
-    const priceIdr = parsedData.price ?? null;
+    const priceIdr =
+      typeof parsedData.price === 'number' && Number.isFinite(parsedData.price)
+        ? parsedData.price
+        : null;
+    const retrievedAt = new Date().toISOString();
 
     return {
       id: ulid(),
@@ -329,6 +352,9 @@ export class TikTokShopAdapter extends BaseSourceAdapter {
       marketplaceListingUrl: null,
       observedAt: parsedData.extractedAt,
       confidence: parsedData.extractionConfidence || 0,
+      dataProvenance: this.dataProvenance,
+      acquisitionMethod: this.acquisitionMethod,
+      retrievedAt,
       dataLineage: {
         sourceId: parsedData.sourceId,
         rawDocumentId: parsedData.rawDocumentId,

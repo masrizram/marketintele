@@ -5,6 +5,9 @@
 # ── Stage 1: Build ───────────────────────────────────────────────────────────
 FROM node:22-alpine AS builder
 
+# Native module (better-sqlite3) build deps: Python + build-base for node-gyp
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
 # Copy lockfile + package.json first for layer caching
@@ -22,6 +25,14 @@ RUN npx tsc --noEmit && npm run build
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM node:22-alpine AS runtime
+
+# Native module (better-sqlite3) rebuild needs the same build deps at install.
+# Chromium for Lazada browser-rendered adapter (Phase 25). The browser adapter
+# uses CDP to render Lazada's JS-rendered SPA search page and extract product
+# data. Chromium runs with --no-sandbox (the Fly container itself provides
+# isolation; Chromium is not exposed externally and only navigates to
+# allowlisted Lazada domains). CDP is bound to localhost only.
+RUN apk add --no-cache python3 make g++ chromium nss freetype freetype-dev harfbuzz ca-certificates ttf-freefont
 
 WORKDIR /app
 

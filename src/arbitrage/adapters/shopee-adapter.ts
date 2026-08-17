@@ -35,10 +35,13 @@ export class ShopeeAdapter extends BaseSourceAdapter {
   readonly trustTier: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'UNKNOWN' = 'MEDIUM';
   readonly isActive = true;
   readonly marketplace = 'shopee' as const;
+  /** Phase 19.3: Shopee uses a public web search page — REAL_PUBLIC_WEB. */
+  readonly dataProvenance = 'REAL_PUBLIC_WEB' as const;
+  readonly acquisitionMethod = 'PUBLIC_WEB' as const;
+  readonly reliabilityTier = 'C' as const;
 
-  /** Shopee public API search endpoint */
-  private readonly searchApiUrl = 'https://shopee.co.id/api/v2/search_items/';
-  private readonly productApiUrl = 'https://shopee.co.id/api/v4/pdp/get_pc/';
+  /** Shopee search page URL (v2 API deprecated — returns 404) */
+  private readonly searchPageUrl = 'https://shopee.co.id/search';
   private readonly requestTimeoutMs = 15000;
 
   constructor() {
@@ -48,9 +51,11 @@ export class ShopeeAdapter extends BaseSourceAdapter {
   /**
    * Search Shopee for products matching a query.
    *
-   * Uses Shopee's public search API. Returns actual product listings or
-   * an empty array with a clear status if no results are found.
-   * Never returns fabricated data.
+   * The Shopee v2 search API (api/v2/search_items/) is deprecated (returns
+   * HTTP 404). The v4 API returns HTTP 403 (anti-bot, requires auth token).
+   * This method fetches the search page HTML and attempts to extract
+   * product data from embedded JSON. If the page is JS-rendered (no embedded
+   * product data), it throws a SOURCE_BLOCKED error — never fabricates.
    */
   async search(query: string, _filters?: Record<string, unknown>): Promise<RawResultSet> {
     this.logger.info(`[Shopee] Searching for: "${query}"`);
@@ -62,7 +67,7 @@ export class ShopeeAdapter extends BaseSourceAdapter {
 
     try {
       const encodedQuery = encodeURIComponent(query.trim());
-      const url = `${this.searchApiUrl}?by=relevance&keyword=${encodedQuery}&limit=10&order=ASC&page_type=search&version=2`;
+      const url = `${this.searchPageUrl}?keyword=${encodedQuery}`;
 
       const response = await this.fetchWithRetry(url, {
         method: 'GET',
@@ -70,57 +75,76 @@ export class ShopeeAdapter extends BaseSourceAdapter {
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json',
+          'Accept': 'text/html,application/xhtml+xml',
           'Accept-Language': 'id-ID,id;q=0.9',
           'Referer': 'https://shopee.co.id/',
-          'X-Requested-With': 'XMLHttpRequest',
         },
+        responseType: 'text',
       });
 
       if (response.status !== 200) {
-        this.logger.error(`[Shopee] HTTP ${response.status} on search for "${query}"`);
-        return [];
+        this.logger.error(`[Shopee] HTTP ${response.status} on search page for "${query}"`);
+        throw new Error(`Shopee search page returned HTTP ${response.status} — source may be blocked`);
       }
 
-      const data = response.data;
-      if (!data || !Array.isArray(data.items)) {
-        this.logger.warn('[Shopee] No items array in API response');
-        return [];
-      }
+      const html: string = typeof response.data === 'string' ? response.data : '';
 
-      if (data.items.length === 0) {
-        this.logger.info(`[Shopee] Empty result for "${query}"`);
-        return [];
-      }
+      // Attempt to extract product data from embedded JSON in the HTML.
+      // Shopee's search page is a Next.js SPA — product data may be in
+      // __NEXT_DATA__ or a window.__ script block.
+      const results = this.extractProductsFromHtml(html, query);
 
-      // Map Shopee's raw item format to our RawResultSet entries
-      const results = data.items.map((item: any) => ({
-        url: this.buildProductUrl(item),
-        title: item.name || '',
-        price: this.extractPrice(item),
-        currency: 'IDR',
-        seller: item.seller?.shopLocation || item.seller?.shopName || null,
-        sellerId: item.seller?.shopid ? String(item.seller?.shopid) : null,
-        rating: item.item_rating?.rating_star || null,
-        reviewCount: item.item_rating?.rating_count || null,
-        soldCount: item.soldout ? 0 : (item.historical_sold || null),
-        image: item.image_hases ? `https://cf.shopee.co.id/file/${item.image_hases}` : null,
-        categoryId: item.catid ? String(item.catid) : null,
-        itemId: item.itemid ? String(item.itemid) : null,
-        shopId: item.seller?.shopid ? String(item.seller?.shopid) : null,
-        rawMetadata: item,
-      }));
+      if (results.length === 0) {
+        this.logger.warn(`[Shopee] No product data found in search page HTML for "${query}" — page is JS-rendered, no embedded product data`);
+        throw new Error('Shopee search page is JS-rendered (no embedded product data) — API endpoints deprecated/blocked (v2=404, v4=403)');
+      }
 
       this.logger.info(`[Shopee] Found ${results.length} results for "${query}"`);
       return results as unknown as RawResultSet;
     } catch (err) {
       if (err instanceof Error && (err.message.includes('timeout') || err.message.includes('TIMEOUT'))) {
         this.logger.error(`[Shopee] Timeout searching "${query}"`);
-      } else {
-        this.logger.error(`[Shopee] Search error for "${query}":`, { error: err instanceof Error ? err.message : String(err) });
+        throw err;
       }
-      return [];
+      // Re-throw so discovery service classifies as SOURCE_ERROR, not EMPTY_RESULT
+      throw err;
     }
+  }
+
+  /**
+   * Extract product data from Shopee search page HTML.
+   * Looks for __NEXT_DATA__ JSON or window.__ script blocks.
+   * Never fabricates — returns empty array if no structured data found.
+   */
+  private extractProductsFromHtml(html: string, _query: string): RawResultSet {
+    // Try __NEXT_DATA__ (Next.js hydration data)
+    const nextDataMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+    if (nextDataMatch) {
+      try {
+        const nd = JSON.parse(nextDataMatch[1]);
+        const items = nd?.props?.pageProps?.search?.results || nd?.props?.pageProps?.initial?.results || [];
+        if (Array.isArray(items) && items.length > 0) {
+          return items.map((item: any) => ({
+            url: this.buildProductUrl(item),
+            title: item.name || '',
+            price: this.extractPrice(item),
+            currency: 'IDR',
+            seller: item.seller?.shopName || null,
+            sellerId: item.seller?.shopid ? String(item.seller.shopid) : null,
+            rating: item.item_rating?.rating_star || null,
+            reviewCount: item.item_rating?.rating_count || null,
+            soldCount: item.historical_sold || null,
+            image: item.image_hases ? `https://cf.shopee.co.id/file/${item.image_hases}` : null,
+            itemId: item.itemid ? String(item.itemid) : null,
+            shopId: item.seller?.shopid ? String(item.seller.shopid) : null,
+            rawMetadata: item,
+          })) as unknown as RawResultSet;
+        }
+      } catch { /* parse failed — continue */ }
+    }
+
+    // No embedded product data found — the page is JS-rendered
+    return [];
   }
 
   /**
@@ -135,16 +159,21 @@ export class ShopeeAdapter extends BaseSourceAdapter {
 
   /**
    * Extract price from Shopee item. Shopee stores price in micro-units (divide by 100000).
+   * Returns a finite number or null — never NaN / Infinity / a non-numeric value.
    */
   private extractPrice(item: any): number | null {
-    if (item.price !== undefined && item.price !== null && !isNaN(Number(item.price))) {
-      return Number(item.price) / 100000;
-    }
-    if (item.price_before_discount !== undefined && item.price_before_discount !== null && !isNaN(Number(item.price_before_discount))) {
-      return Number(item.price_before_discount) / 100000;
-    }
-    if (item.price_max !== undefined && !isNaN(Number(item.price_max))) {
-      return Number(item.price_max) / 100000;
+    const micro = this.toFiniteNumber(item?.price)
+      ?? this.toFiniteNumber(item?.price_before_discount)
+      ?? this.toFiniteNumber(item?.price_max);
+    return micro === null ? null : micro / 100000;
+  }
+
+  private toFiniteNumber(value: unknown): number | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'string' && value.trim() !== '') {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
     }
     return null;
   }
@@ -311,7 +340,11 @@ export class ShopeeAdapter extends BaseSourceAdapter {
    * Price: normalized to IDR per unit
    */
   async normalize(parsedData: ParsedEntity): Promise<CanonicalProduct> {
-    const priceIdr = parsedData.price ?? null;
+    const priceIdr =
+      typeof parsedData.price === 'number' && Number.isFinite(parsedData.price)
+        ? parsedData.price
+        : null;
+    const retrievedAt = new Date().toISOString();
 
     return {
       id: ulid(),
@@ -337,6 +370,9 @@ export class ShopeeAdapter extends BaseSourceAdapter {
       marketplaceListingUrl: null,
       observedAt: parsedData.extractedAt,
       confidence: parsedData.extractionConfidence || 0,
+      dataProvenance: this.dataProvenance,
+      acquisitionMethod: this.acquisitionMethod,
+      retrievedAt,
       dataLineage: {
         sourceId: parsedData.sourceId,
         rawDocumentId: parsedData.rawDocumentId,

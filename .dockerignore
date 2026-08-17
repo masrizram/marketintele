@@ -1,0 +1,12 @@
+node_modules
+coverage
+dist
+dist-api
+.env
+.env.local
+.git
+.vercel
+.audit-runtime
+data
+*.md
+npm-debug.log

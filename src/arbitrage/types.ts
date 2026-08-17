@@ -118,6 +118,12 @@ export interface CanonicalProduct {
   observedAt: Timestamp;
   confidence: number;
   dataLineage: DataLineage;
+  /** Phase 19.3: data provenance category. Optional for backwards compat. */
+  dataProvenance?: import('./provenance/data-provenance').DataProvenanceCategory;
+  /** Phase 19.3: acquisition method. Optional for backwards compat. */
+  acquisitionMethod?: import('./provenance/data-provenance').AcquisitionMethod;
+  /** Phase 19.8: when the data was retrieved (may differ from observedAt). */
+  retrievedAt?: Timestamp;
 }
 
 export interface DataLineage {
@@ -189,4 +195,10 @@ export const MarketplaceIdSchema = z.enum([
 
 export interface MarketplaceSource extends SourceAdapter {
   readonly marketplace: Marketplace;
+  /** Data provenance category per Phase 19.3. */
+  readonly dataProvenance?: import('./provenance/data-provenance').DataProvenanceCategory;
+  /** Acquisition method per Phase 19.3. */
+  readonly acquisitionMethod?: import('./provenance/data-provenance').AcquisitionMethod;
+  /** Source reliability tier per Phase 19.9. */
+  readonly reliabilityTier?: import('./provenance/data-provenance').SourceReliabilityTier;
 }

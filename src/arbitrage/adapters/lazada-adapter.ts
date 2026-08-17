@@ -28,6 +28,10 @@ export class LazadaAdapter extends BaseSourceAdapter {
   readonly trustTier: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'UNKNOWN' = 'MEDIUM';
   readonly isActive = true;
   readonly marketplace = 'lazada' as const;
+  /** Phase 19.3: Lazada uses HTML scraping — REAL_PUBLIC_WEB. */
+  readonly dataProvenance = 'REAL_PUBLIC_WEB' as const;
+  readonly acquisitionMethod = 'PUBLIC_WEB' as const;
+  readonly reliabilityTier = 'C' as const;
 
   private readonly requestTimeoutMs = 15000;
 
@@ -95,7 +99,7 @@ export class LazadaAdapter extends BaseSourceAdapter {
             results.push({
               url: item.url || item.itemDetailUrl || `https://www.lazada.co.id/products/${item.itemId}-i-${item.itemId}.html`,
               title: item.name || '',
-              price: item.price ? parseFloat(item.price) : null,
+              price: item.price ? this.toFiniteNumber(item.price) : null,
               currency: 'IDR',
               seller: item.sellerName || null,
               sellerId: item.sellerId ? String(item.sellerId) : null,
@@ -125,7 +129,7 @@ export class LazadaAdapter extends BaseSourceAdapter {
             results.push({
               url: data.url || '',
               title: data.name || '',
-              price: data.offers?.price ? Number(data.offers.price) : null,
+              price: data.offers?.price ? this.toFiniteNumber(data.offers.price) : null,
               currency: data.offers?.priceCurrency || 'IDR',
               seller: null,
               sellerId: null,
@@ -144,6 +148,16 @@ export class LazadaAdapter extends BaseSourceAdapter {
     }
 
     return results;
+  }
+
+  private toFiniteNumber(value: unknown): number | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'string' && value.trim() !== '') {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
   }
 
   async fetch(target: string): Promise<RawPayload> {
@@ -268,7 +282,7 @@ export class LazadaAdapter extends BaseSourceAdapter {
       sku: productInfo.sku || productInfo.itemSku || null,
       barcode: productInfo.barcode || productInfo.mdv || null,
       category: productInfo.categoryId ? String(productInfo.categoryId) : null,
-      price: productInfo.price ? parseFloat(productInfo.price) : (productInfo.assemblePrice ? parseFloat(productInfo.assemblePrice) : null),
+      price: productInfo.price ? this.toFiniteNumber(productInfo.price) : (productInfo.assemblePrice ? this.toFiniteNumber(productInfo.assemblePrice) : null),
       currency: 'IDR',
       moq: productInfo.packageValue?.packageCount || 1,
       packageQuantity: productInfo.packageValue?.packageCount || 1,
@@ -300,7 +314,11 @@ export class LazadaAdapter extends BaseSourceAdapter {
   }
 
   async normalize(parsedData: ParsedEntity): Promise<CanonicalProduct> {
-    const priceIdr = parsedData.price ?? null;
+    const priceIdr =
+      typeof parsedData.price === 'number' && Number.isFinite(parsedData.price)
+        ? parsedData.price
+        : null;
+    const retrievedAt = new Date().toISOString();
 
     return {
       id: ulid(),
@@ -326,6 +344,9 @@ export class LazadaAdapter extends BaseSourceAdapter {
       marketplaceListingUrl: null,
       observedAt: parsedData.extractedAt,
       confidence: parsedData.extractionConfidence || 0,
+      dataProvenance: this.dataProvenance,
+      acquisitionMethod: this.acquisitionMethod,
+      retrievedAt,
       dataLineage: {
         sourceId: parsedData.sourceId,
         rawDocumentId: parsedData.rawDocumentId,
