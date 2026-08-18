@@ -124,6 +124,20 @@ export interface CanonicalProduct {
   acquisitionMethod?: import('./provenance/data-provenance').AcquisitionMethod;
   /** Phase 19.8: when the data was retrieved (may differ from observedAt). */
   retrievedAt?: Timestamp;
+  /** Marketplace rating (0-5). Optional — scraped from listing. */
+  rating?: number | null;
+  /** Number of reviews. Optional — scraped from listing. */
+  reviewCount?: number | null;
+  /** Number sold. Optional — scraped from listing. */
+  soldCount?: number | null;
+  /** Original (pre-discount) price in IDR. Optional. */
+  originalPriceIdr?: number | null;
+  /** Discount percentage 0-100. Optional. */
+  discountPercent?: number | null;
+  /** Availability / stock status string. Optional. */
+  availability?: string | null;
+  /** Source currency code (e.g. IDR). Optional. */
+  currency?: string | null;
 }
 
 export interface DataLineage {

@@ -267,6 +267,8 @@ export class BlibliAdapter extends BaseSourceAdapter {
         ? parsedData.price
         : null;
     const retrievedAt = new Date().toISOString();
+    const rawEvidence = parsedData.rawEvidence || {};
+    const listingUrl = (rawEvidence.url as string) || null;
 
     return {
       id: ulid(),
@@ -289,12 +291,16 @@ export class BlibliAdapter extends BaseSourceAdapter {
       marketplaceListingId: null,
       sellerId: parsedData.sellerId || null,
       sellerName: parsedData.sellerName || null,
-      marketplaceListingUrl: null,
+      marketplaceListingUrl: listingUrl,
       observedAt: parsedData.extractedAt,
       confidence: parsedData.extractionConfidence || 0,
       dataProvenance: this.dataProvenance,
       acquisitionMethod: this.acquisitionMethod,
       retrievedAt,
+      rating: parsedData.rating ?? null,
+      reviewCount: parsedData.reviewCount ?? null,
+      soldCount: parsedData.soldCount ?? null,
+      currency: 'IDR',
       dataLineage: {
         sourceId: parsedData.sourceId,
         rawDocumentId: parsedData.rawDocumentId,

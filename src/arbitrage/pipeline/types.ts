@@ -64,6 +64,12 @@ export interface SupplierSource {
   confidence: SupplierConfidenceTier;
   confidenceScore: number;         // 0-1
   observedAt: string;
+  /** Data provenance from supplier adapter (REAL / TEST_FIXTURE / NONE). */
+  dataProvenance?: 'REAL' | 'TEST_FIXTURE' | 'NONE';
+  /** Supplier product name from the source. */
+  supplierProductName?: string | null;
+  /** Supplier product URL for direct reference. */
+  supplierProductUrl?: string | null;
 }
 
 // ─── Economic Result ─────────────────────────────────────────────────────────

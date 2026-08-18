@@ -33,20 +33,50 @@ export function formatPipelineResult(result: PipelineResult, _logger?: ReturnTyp
   // ─── Product Data ─────────────────────────────────────────────────────────
   if (result.canonicalProduct) {
     const p = result.canonicalProduct;
-    lines.push('📦 <b>Product</b>');
-    lines.push(`  Title: ${p.canonicalTitle}`);
-    lines.push(`  Brand: ${p.brand || 'UNKNOWN'}`);
-    lines.push(`  Model: ${p.model || 'UNKNOWN'}`);
-    lines.push(`  SKU: ${p.sku || 'UNKNOWN'}`);
-    lines.push(`  Barcode: ${p.barcode || 'UNKNOWN'}`);
-    lines.push(`  Category ID: ${p.categoryId || 'UNKNOWN'}`);
-    lines.push(`  Price: ${formatIDR(p.priceInIdr)}`);
-    lines.push(`  MOQ: ${p.moq}`);
-    lines.push(`  Package: ${p.packageQuantity} × ${p.packageUnit}`);
-    lines.push(`  Confidence: ${(p.confidence * 100).toFixed(1)}%`);
-    lines.push(`  Source: ${p.sourceId}`);
-    lines.push(`  Observed: ${p.observedAt}`);
+    const provenance = p.dataProvenance || 'UNKNOWN';
+    lines.push('📦 <b>PRODUCT</b>');
     lines.push('');
+    lines.push(`  Nama: <b>${p.canonicalTitle}</b>`);
+    if (p.brand) lines.push(`  Brand: ${p.brand}`);
+    if (p.model) lines.push(`  Model: ${p.model}`);
+    if (p.sku) lines.push(`  SKU: ${p.sku}`);
+    lines.push('');
+    lines.push('━━━ MARKETPLACE ━━━');
+    lines.push(`  🛒 Sumber: ${p.sourceId || 'UNKNOWN'}`);
+    lines.push(`  💰 Harga: ${formatIDR(p.priceInIdr)}`);
+    if (p.originalPriceIdr != null && p.originalPriceIdr > 0 && p.priceInIdr !== p.originalPriceIdr) {
+      lines.push(`  📉 Harga Asli: ${formatIDR(p.originalPriceIdr)}`);
+    }
+    if (p.discountPercent != null && p.discountPercent > 0) {
+      lines.push(`  🏷️ Diskon: ${p.discountPercent}%`);
+    }
+    if (p.sellerName) lines.push(`  🏪 Seller: ${p.sellerName}`);
+    if (p.rating != null) lines.push(`  ⭐ Rating: ${p.rating}`);
+    if (p.reviewCount != null) lines.push(`  📝 Reviews: ${p.reviewCount.toLocaleString('id-ID')}`);
+    if (p.soldCount != null && typeof p.soldCount === 'number') {
+      lines.push(`  📦 Terjual: ${p.soldCount.toLocaleString('id-ID')}`);
+    }
+    if (p.marketplaceListingUrl) {
+      lines.push(`  🔗 URL: ${p.marketplaceListingUrl}`);
+    }
+    lines.push(`  📅 Scraped: ${p.observedAt || 'UNKNOWN'}`);
+    lines.push(`  📋 Provenance: <b>${provenance}</b>`);
+    lines.push(`  🎯 Confidence: ${(p.confidence * 100).toFixed(1)}%`);
+    lines.push('');
+
+    // Show additional discovery products if available
+    if (result.discovery && result.discovery.products.length > 1) {
+      lines.push('━━━ LISTING LAIN ━━━');
+      const others = result.discovery.products.filter(x => x.id !== p.id).slice(0, 4);
+      for (const op of others) {
+        const priceLine = formatIDR(op.priceInIdr);
+        const urlSnippet = op.marketplaceListingUrl
+          ? `<a href="${op.marketplaceListingUrl}">link</a>`
+          : '';
+        lines.push(`  • ${op.canonicalTitle.substring(0, 50)} — ${priceLine} ${urlSnippet}`);
+      }
+      lines.push('');
+    }
   }
 
   // ─── Supplier ─────────────────────────────────────────────────────────────

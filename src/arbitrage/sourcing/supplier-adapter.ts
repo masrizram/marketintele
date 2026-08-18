@@ -120,6 +120,9 @@ export function offerToSupplierSource(offer: SupplierOffer): SupplierSource {
     confidence: mapVerificationToConfidence(offer.supplier.verificationStatus),
     confidenceScore: offer.supplier.supplierConfidence,
     observedAt: new Date().toISOString(),
+    dataProvenance: offer.supplier.dataProvenance === 'REAL' ? 'REAL' : offer.supplier.dataProvenance === 'TEST_FIXTURE' ? 'TEST_FIXTURE' : 'NONE',
+    supplierProductName: offer.supplier.supplierName,
+    supplierProductUrl: offer.supplier.catalogUrl || offer.supplier.website || null,
   };
 }
 

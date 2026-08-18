@@ -345,6 +345,14 @@ export class ShopeeAdapter extends BaseSourceAdapter {
         ? parsedData.price
         : null;
     const retrievedAt = new Date().toISOString();
+    const rawEvidence = parsedData.rawEvidence || {};
+    const listingUrl = (rawEvidence.url as string) || null;
+    const priceBeforeDiscount = typeof rawEvidence.priceBeforeDiscount === 'number'
+      ? rawEvidence.priceBeforeDiscount
+      : null;
+    const discountPercent = rawEvidence.discount != null && priceIdr != null && priceBeforeDiscount != null && priceBeforeDiscount > 0
+      ? Math.round(((priceBeforeDiscount - priceIdr) / priceBeforeDiscount) * 100)
+      : null;
 
     return {
       id: ulid(),
@@ -364,15 +372,22 @@ export class ShopeeAdapter extends BaseSourceAdapter {
       packageUnit: parsedData.packageUnit || 'pcs',
       sourceId: parsedData.sourceId,
       supplierProductId: null,      // Not resolved yet — separate supplier discovery step
-      marketplaceListingId: null,   // Could be set from itemid
+      marketplaceListingId: null,
       sellerId: parsedData.sellerId || null,
       sellerName: parsedData.sellerName || null,
-      marketplaceListingUrl: null,
+      marketplaceListingUrl: listingUrl,
       observedAt: parsedData.extractedAt,
       confidence: parsedData.extractionConfidence || 0,
       dataProvenance: this.dataProvenance,
       acquisitionMethod: this.acquisitionMethod,
       retrievedAt,
+      rating: parsedData.rating ?? null,
+      reviewCount: parsedData.reviewCount ?? null,
+      soldCount: parsedData.soldCount ?? null,
+      originalPriceIdr: priceBeforeDiscount,
+      discountPercent,
+      availability: rawEvidence.stock != null ? String(rawEvidence.stock) : null,
+      currency: 'IDR',
       dataLineage: {
         sourceId: parsedData.sourceId,
         rawDocumentId: parsedData.rawDocumentId,
