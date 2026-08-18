@@ -192,7 +192,7 @@ export function startHealthServer(port: number = 9090): Server {
     }
   });
 
-  server.listen(port, '0.0.0.0', () => {
+  server.listen(port, '::', () => {
     logger.info(`Health server listening on :${port} (/live, /ready, /health, /metrics)`);
   });
 
