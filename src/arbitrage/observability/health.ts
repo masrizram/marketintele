@@ -39,7 +39,13 @@ export interface ReadinessStatus {
 const APP_VERSION = '2.0.0';
 const startTime = Date.now();
 
-function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
+function requireAuthForEndpoint(url: string): 'none' | 'optional' | 'required' {
+  if (url === '/live' || url === '/ready') return 'none';
+  return 'required';
+}
+
+function requireAuth(req: IncomingMessage, res: ServerResponse, url: string): boolean {
+  if (requireAuthForEndpoint(url) === 'none') return true;
   const apiKey = process.env.ADMIN_API_KEY || process.env.HEALTH_API_KEY;
   if (!apiKey) return true;
   const auth = (req.headers['authorization'] || req.headers['x-admin-api-key'] || '') as string;
@@ -146,7 +152,7 @@ export function startHealthServer(port: number = 9090): Server {
     const url = req.url || '/';
 
     try {
-      if (!requireAuth(req, res)) return;
+      if (!requireAuth(req, res, url)) return;
 
       if (url === '/live') {
         const status = getLivenessStatus();
@@ -186,7 +192,7 @@ export function startHealthServer(port: number = 9090): Server {
     }
   });
 
-  server.listen(port, () => {
+  server.listen(port, '0.0.0.0', () => {
     logger.info(`Health server listening on :${port} (/live, /ready, /health, /metrics)`);
   });
 
