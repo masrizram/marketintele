@@ -44,6 +44,13 @@ async function bootstrap(): Promise<void> {
   requireWorkerConfig();
   logger.info(`Config loaded: logLevel=${config.logLevel}, ssrf=${config.ssrfFirewallEnabled}`);
 
+  // Step 1b: Start the health/metrics HTTP server IMMEDIATELY so Fly.io
+  // liveness/readiness probes pass during the (potentially slow) dependency
+  // initialization below (Supabase connection, SQLite, adapters). Binding to
+  // :: (dual-stack) so Fly.io's IPv6 proxy health checks can connect.
+  const healthPort = parseInt(process.env.HEALTH_PORT || config.healthPort.toString(), 10);
+  const healthServer = startHealthServer(healthPort);
+
   // Step 2: Legacy SQLite for user preferences and promo history.
   // SQLite IS required — the bot persists user settings and history here.
   try {
@@ -140,10 +147,6 @@ async function bootstrap(): Promise<void> {
   // Step 6b: Start alert manager
   alertManager.start(config.alertIntervalMs);
   logger.info('ALERTING — Alert manager started');
-
-  // Step 6c: Start health/metrics HTTP server (IDEA §49 / AUDIT §50)
-  const healthPort = parseInt(process.env.HEALTH_PORT || config.healthPort.toString(), 10);
-  const healthServer = startHealthServer(healthPort);
 
   // Step 7: Start Telegram bot
   try {
