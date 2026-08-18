@@ -32,13 +32,16 @@ FROM node:22-alpine AS runtime
 # data. Chromium runs with --no-sandbox (the Fly container itself provides
 # isolation; Chromium is not exposed externally and only navigates to
 # allowlisted Lazada domains). CDP is bound to localhost only.
-RUN apk add --no-cache python3 make g++ chromium nss freetype freetype-dev harfbuzz ca-certificates ttf-freefont
+RUN apk add --no-cache python3 make g++ chromium nss freetype harfbuzz ca-certificates ttf-freefont
 
 WORKDIR /app
 
-# Install only production dependencies
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force && apk del python3 make g++
+
+ENV CHROMIUM_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 # Copy built artifacts
 COPY --from=builder /app/dist ./dist

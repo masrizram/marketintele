@@ -82,24 +82,14 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
-      - name: Typecheck API layer
-        run: npm run typecheck:api
-
       - name: Lint
         run: npx eslint src --ext .ts --quiet
-
-      - name: Lint API layer
-        run: npx eslint api --ext .ts --quiet
-        continue-on-error: true
 
       - name: Build
         run: npm run build
 
-      - name: Build API layer
-        run: npm run build:api
-
       - name: Test with coverage
-        run: npx jest --coverage --forceExit
+        run: npx jest --coverage
 
       - name: Upload coverage
         if: always()

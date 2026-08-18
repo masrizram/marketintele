@@ -10,12 +10,15 @@
         "lint": "eslint src --ext .ts",
         "typecheck": "tsc --noEmit",
         "test": "jest --passWithNoTests",
-        "test:watch": "jest --watch",
+        "test:ci": "jest --coverage --ci --maxWorkers=2",
         "test:coverage": "jest --coverage",
+        "test:watch": "jest --watch",
         "migrate": "tsx src/arbitrage/db/migrate.ts",
         "verify:supabase": "tsx src/arbitrage/db/verify-supabase.ts",
         "schema:audit": "tsx scripts/schema-audit.ts",
-        "seed": "tsx src/arbitrage/db/seed.ts"
+        "seed": "tsx src/arbitrage/db/seed.ts",
+        "build:api": "echo API layer not yet deployed — create api/ directory first",
+        "typecheck:api": "echo API layer not yet deployed — create api/ directory first"
     },
     "dependencies": {
         "axios": "^1.6.7",

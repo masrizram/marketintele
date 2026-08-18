@@ -59,7 +59,11 @@ kill_timeout = 30        # let bot.stop() + pool close + adapter shutdown finish
   size = "shared-cpu-1x"   # ~$2.4/mo base
   memory = "1gb"           # Chromium browser adapter needs ~400MB headroom (Phase 25)
 
-# Fly-managed health check → restarts the worker if the health server dies.
+# Health/metrics HTTP server — internal port for health checks ONLY.
+# The health server is now behind ADMIN_API_KEY auth middleware (health.ts).
+# AUDIT: [http_service] is required for Fly Machines lifecycle management
+# (auto_stop_machines, min_machines_running). The health endpoints are
+# now gated behind bearer-token auth to prevent public data leakage.
 [http_service]
   internal_port = 9090
   auto_stop_machines = false   # NEVER stop on idle — polling must stay alive
@@ -70,6 +74,23 @@ kill_timeout = 30        # let bot.stop() + pool close + adapter shutdown finish
     type = "requests"
     hard_limit = 50
     soft_limit = 20
+
+  # AUDIT P0-2: Health checks for Fly.io auto-recovery.
+  # Dockerfile HEALTHCHECK is ignored by Fly — these [[services.checks]] blocks
+  # embedded inside [http_service] are what Fly uses to detect dead processes.
+  [[http_service.checks]]
+    http_path = "/live"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "30s"
+    restart_limit = 3
+
+  [[http_service.checks]]
+    http_path = "/ready"
+    interval = "30s"
+    timeout = "10s"
+    grace_period = "60s"
+    restart_limit = 2
 
 # Process-level restart policy: always restart the worker if it exits/crashes.
 [restarts]

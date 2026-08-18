@@ -10,6 +10,7 @@
  * external framework — just Node's built-in http module.
  */
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
+import { timingSafeEqual } from 'crypto';
 import { metricsRegistry } from './metrics';
 import { healthCheck as pgHealthCheck } from '../db/pool';
 import { adapterRegistry } from '../adapters/registry';
@@ -37,6 +38,19 @@ export interface ReadinessStatus {
 
 const APP_VERSION = '2.0.0';
 const startTime = Date.now();
+
+function requireAuth(req: IncomingMessage, res: ServerResponse): boolean {
+  const apiKey = process.env.ADMIN_API_KEY || process.env.HEALTH_API_KEY;
+  if (!apiKey) return true;
+  const auth = (req.headers['authorization'] || req.headers['x-admin-api-key'] || '') as string;
+  const expected = `Bearer ${apiKey}`;
+  if (!auth || !timingSafeEqual(Buffer.from(auth), Buffer.from(expected))) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
+    return false;
+  }
+  return true;
+}
 
 /**
  * Check all dependencies for readiness.
@@ -132,6 +146,8 @@ export function startHealthServer(port: number = 9090): Server {
     const url = req.url || '/';
 
     try {
+      if (!requireAuth(req, res)) return;
+
       if (url === '/live') {
         const status = getLivenessStatus();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -182,6 +198,21 @@ export function startHealthServer(port: number = 9090): Server {
  */
 export function stopHealthServer(server: Server): Promise<void> {
   return new Promise((resolve) => {
-    server.close(() => resolve());
+    const timeout = setTimeout(() => {
+      server.unref();
+      resolve();
+    }, 10000);
+
+    server.keepAliveTimeout = 5000;
+    server.headersTimeout = 6000;
+
+    if ('closeAllConnections' in server) {
+      (server as any).closeAllConnections();
+    }
+
+    server.close(() => {
+      clearTimeout(timeout);
+      resolve();
+    });
   });
 }
