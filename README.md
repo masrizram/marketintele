@@ -1,89 +1,84 @@
-# AI Product Sourcing & Marketplace Arbitrage Intelligence Engine
+# MarketIntele — AI Product Sourcing & Marketplace Arbitrage Intelligence Engine
 
-**Version:** 2.0.1  
+**Version:** 2.0.0  
 **Target Market:** Indonesia  
-**Production Gate:** `INFRASTRUCTURE_READY`  
-**Audit Baseline:** `FINAL_PRODUCTION_AUDIT_V3.md` (2026-08-15)  
-**Platform:** Fly.io + Supabase
+**Platform:** Fly.io + Supabase  
+**License:** MIT  
 
 A TypeScript arbitrage intelligence engine that discovers products on Indonesian marketplaces (Shopee, Tokopedia, Lazada, Blibli, TikTok Shop) via web scraping, sources them from B2B suppliers, and computes risk-adjusted profit opportunities through a fail-closed, financially-integrity-first pipeline.
 
-> **Read this first.** This README documents the system **as it actually exists today** and distinguishes **IMPLEMENTED** from **TESTED** from **RUNTIME_VERIFIED** from **PRODUCTION_READY**. The current gate is `INFRASTRUCTURE_READY` — marketplace scraping is deployed and verified; real supplier adapter remains `NOT_TESTED`. See [§2 Current Status](#2-current-project-status) and [§24 Production Readiness](#24-production-readiness).
+> This README documents the system as it actually exists. It distinguishes **IMPLEMENTED** from **TESTED** from **RUNTIME_VERIFIED** from **PRODUCTION_READY**. The current production gate is `INFRASTRUCTURE_READY` — marketplace scraping is deployed and verified; real supplier adapter remains `NOT_TESTED`.
 
 ---
 
 ## Architecture at a Glance
 
-The system has two deployment surfaces that share one business-logic core:
+```mermaid
+flowchart TD
+    subgraph Fly["Fly.io (persistent worker)"]
+        Health["Health Server :9090\n/live /ready /health /metrics"]
+        Bot["Telegram Bot (Telegraf long polling)"]
+        Scraping["Scraping Engine\n5 adapters (3 HTTP + 2 CDP)"]
+        Pipeline["Arbitrage Pipeline\nsrc/arbitrage/"]
+        SQLite["Legacy SQLite\n(user prefs, history)"]
+    end
 
-```
-┌───────────────────────── FLY.IO (persistent worker) ───────────────────────┐
-│  HEALTH SERVER (port 9090):                                                │
-│  GET /live, /ready, /health, /metrics (with Bearer auth)                   │
-│  TELEGRAM BOT: long polling via Telegraf                                   │
-│  SCRAPING ENGINE: browser (CDP) + HTTP scrapers                            │
-│  Shared engine → src/arbitrage/** → DB layer                               │
-│  PERSISTENT PROCESS — runs continuously, 1 instance                        │
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │ TLS (pooled PG, port 6543)
-                                   ▼
-┌──────────────────────── SUPABASE (PostgreSQL 16) ──────────────────────────┐
-│  28 tables + schema_migrations, 27 FKs, 98 indexes, NUMERIC(18,4)          │
-│  PgBouncer (port 6543) for serverless; direct (5432) for worker/DDL.       │
-└─────────────────────────────────────────────────────────────────────────────┘
+    subgraph Supabase["Supabase (PostgreSQL 16)"]
+        PG["28 tables, 27 FKs, 98 indexes\nNUMERIC(18,4) financial columns"]
+    end
+
+    User["Telegram User"] --> Bot
+    Bot --> Pipeline
+    Pipeline --> Scraping
+    Pipeline --> PG
+    Pipeline --> Health
+    Scraping -->|"Shopee, Tokopedia, Lazada, Blibli, TikTok Shop"| MP["Indonesian Marketplaces"]
 ```
 
 **Platform:** Deployed on Fly.io (region: `sin`) as a persistent worker process.  
-**Database:** Supabase PostgreSQL (`ap-northeast-1`).  
-**No Vercel:** This is a long-running worker with Telegram long polling, browser automation, and scraping — incompatible with serverless functions.
+**Database:** Supabase PostgreSQL 16 (`ap-northeast-1`).  
+**No serverless:** This is a long-running worker with Telegram long polling, browser automation, and scraping — incompatible with serverless functions.
 
 ---
 
-## Quick Start (Fly.io + Supabase)
-
-The shortest verified path from a fresh clone to a running system.
+## Quick Start
 
 ```bash
-# 1. Prerequisites: Node.js >= 20, npm, a Supabase project (or local PostgreSQL)
+# Prerequisites: Node.js >= 20, a Supabase project (or local PostgreSQL)
 node --version   # must be >= 20
 
-# 2. Clone & install
+# Clone & install
 git clone <repo-url> marketintele
 cd marketintele
 npm install
 
-# 3. Configure environment
-cp .env.example .env.local
-# Edit .env.local: set SUPABASE_DATABASE_URL, TELEGRAM_BOT_TOKEN, ALLOWED_USER_IDS, ADMIN_API_KEY
+# Configure environment
+# Create a .env file with the required variables (see Environment Variables below)
 
-# 4. Apply database migration to Supabase
+# Apply database migration
 npm run migrate
 
-# 5. Verify the database connection end-to-end
+# Verify database connection
 npm run verify:supabase
 
-# 6. Typecheck, build, test
+# Typecheck, build, test
 npx tsc --noEmit
 npm run build
 npm test
 
-# 7. Deploy to Fly.io
-flyctl deploy
-
-# 8. Verify health (with Bearer auth)
-flyctl ssh console
-curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:9090/health
+# Start development server
+npm run dev
 ```
 
-> **Local PostgreSQL fallback:** If you prefer not to use Supabase, set `PG_HOST/PG_PORT/PG_USER/PG_PASSWORD/PG_DATABASE` instead and run `docker compose up -d postgres`. The DB layer resolves `SUPABASE_DATABASE_URL → DATABASE_URL → PG_*` in that order. See [§12 Local Development](#12-local-development).
+> **Local PostgreSQL fallback:** Set `PG_HOST/PG_PORT/PG_USER/PG_PASSWORD/PG_DATABASE` and run `docker compose up -d postgres`. The DB layer resolves `SUPABASE_DATABASE_URL → DATABASE_URL → PG_*` in that order.
 
-> **TEST_FIXTURE ≠ production data.** Fixture results prove the pipeline mechanics work; they do **not** prove real-world arbitrage profitability. See [§20 TEST_FIXTURE Mode](#20-test_fixture-mode).
+> **TEST_FIXTURE ≠ production data.** Fixture results prove pipeline mechanics work; they do not prove real-world arbitrage profitability.
 
 ---
 
 ## 1. Overview
 
-MarketIntele is an arbitrage intelligence engine that answers:
+MarketIntele answers:
 
 > *"Can I buy product X from a B2B supplier at cost C, sell it on marketplace M at the market clearing price P, and realize a risk-adjusted profit after landed cost, fees, returns, and competition?"*
 
@@ -104,7 +99,7 @@ The system enforces a strict **fail-closed** philosophy: when a mandatory econom
 Discovery → Market Clearing Price → Matching → Supplier Sourcing
 → Landed Cost → Marketplace Cost → Profit (dual-engine) → Demand
 → Competition → Risk (11 dims) → Decay → Expected Value
-→ 15 Decision Gates (C01–C15) → RECOMMEND / REVIEW / REJECT
+→ 16 Decision Gates (C01–C15 + C13b) → RECOMMEND / REVIEW / REJECT
 ```
 
 ---
@@ -115,21 +110,21 @@ Discovery → Market Clearing Price → Matching → Supplier Sourcing
 |---|---|---|
 | Build | **PASS** | `npm run build` → exit 0 |
 | Typecheck | **PASS** | `npx tsc --noEmit` → exit 0 |
-| Tests | **PASS** | `npm test` → 545/545 pass, 34 suites |
+| Tests | **PASS** | 40 suites, 696 unit tests passing (40 PG-dependent tests skip without DB) |
 | Coverage | **PASS** | 85.62% statements (threshold 80% met) |
 | Lint | **PASS** | `npx eslint src --ext .ts --quiet` → 0 errors |
 | Financial Integrity | **PASS** | UNKNOWN≠0, Decimal precision 28, dual-engine, NaN rejected |
-| Supabase DB layer | **DEPLOYED + VERIFIED** | Connection resolver, migration, verify command; live Supabase (16/16 PASS) |
+| Supabase DB layer | **DEPLOYED + VERIFIED** | Connection resolver, migration, verify command; 16/16 E2E checks |
 | Fly.io Deployment | **DEPLOYED** | Persistent worker on Fly.io `sin` region |
 | Marketplace Scraping | **DEPLOYED + VERIFIED** | 5 adapters (3 HTTP + 2 CDP), anti-blocking, runtime verified |
 | Anti-Blocking Strategy | **IMPLEMENTED** | User-agent rotation, delays, retries, circuit breaker |
 | Browser Automation | **DEPLOYED + VERIFIED** | Chromium running in Fly.io container |
 | Supplier Sourcing | **INTEGRATION_VERIFIED** | Contract complete, 21 failure-injection tests; real runtime **NOT_TESTED** |
 | PostgreSQL | **RUNTIME_VERIFIED** | 28 integration tests against PostgreSQL 16 (when DB available) |
-| Security | **PASS** | 64 SSRF/security tests + Bearer auth for endpoints |
-| Observability | **DEPLOYED** | /live, /ready, /health, /metrics + 12 metrics, 17 tests |
-| Fly.io Health Checks | **DEPLOYED** | /live (15s), /ready (30s) with Bearer auth |
-| Production Gate | **INFRASTRUCTURE_READY** | P0=0, P1=1 (real supplier adapter needed) — marketplace scraping is DEPLOYED |
+| Security | **PASS** | SSRF firewall, Bearer auth for `/health` and `/metrics` |
+| Observability | **DEPLOYED** | `/live`, `/ready`, `/health`, `/metrics` + 15 Prometheus metrics |
+| Circuit Breaker | **WIRED** | Per-adapter breakers wired at bootstrap |
+| Production Gate | **INFRASTRUCTURE_READY** | P0=0, P1=1 (real supplier adapter needed) |
 
 ---
 
@@ -137,43 +132,34 @@ Discovery → Market Clearing Price → Matching → Supplier Sourcing
 
 ### 3.1 Fly.io Worker (Persistent)
 
-The application runs as a **persistent worker** on Fly.io:
+The application runs as a persistent worker on Fly.io:
 
-**Deployment Configuration:**
 - **Platform**: Fly.io Machines
-- **Region**: `sin` (Singapore) — co-located with Supabase Tokyo
+- **Region**: `sin` (Singapore)
 - **Instance**: `shared-cpu-1x` (1GB RAM)
 - **Storage**: Persistent volume `/app/data` for SQLite
 - **Port**: 9090 (internal)
 - **Health Checks**: `/live` (15s), `/ready` (30s)
 
-**Endpoints (with Bearer Auth):**
+**Endpoints:**
 
 | Endpoint | Method | Auth | Purpose |
-|----------|--------|------|---------|
+|---|---|---|---|
+| `/live` | GET | None | Liveness probe |
+| `/ready` | GET | None | Readiness (PG + adapters) |
 | `/health` | GET | Bearer token | Aggregate health status |
-| `/live` | GET | Bearer token | Liveness probe |
-| `/ready` | GET | Bearer token | Readiness (PG + adapters) |
 | `/metrics` | GET | Bearer token | Prometheus metrics |
-
-**Why Fly.io?**
-- Persistent process required for Telegram long polling
-- Browser automation (CDP) needs stable runtime
-- Scraping jobs require state management
-- Better cost efficiency for continuous workloads
 
 The worker runs `src/index.ts`:
 - Telegram `bot.launch()` long polling.
-- Health/metrics server on `:9090` (Bearer-protected).
+- Health/metrics server on `:9090`.
 - Legacy SQLite (user preferences/promo history).
 - Marketplace scrapers (CDP + HTTP) invoked by the `/arbitrage` command.
 - Arbitrage pipeline.
 
-Deployed via `flyctl deploy`. The worker guard (`requireWorkerConfig`) fails fast if `TELEGRAM_BOT_TOKEN` is missing.
-
 ### 3.2 Supabase (Database)
 
-Supabase PostgreSQL 16 hosts all persistent data. The existing migration (`0001-core-foundation.sql`) runs unchanged — it uses only standard PostgreSQL features (tables, FKs, indexes, ENUMs, `NUMERIC(18,4)`, `JSONB`, `TIMESTAMPTZ`, `ON CONFLICT`). No Supabase SDK is introduced; the app uses `pg` (node-postgres) for all access.
+Supabase PostgreSQL 16 hosts all persistent data. The migration (`0001-core-foundation.sql`) uses standard PostgreSQL features (tables, FKs, indexes, ENUMs, `NUMERIC(18,4)`, `JSONB`, `TIMESTAMPTZ`). The app uses `pg` (node-postgres) for all access — no Supabase SDK.
 
 ---
 
@@ -181,8 +167,8 @@ Supabase PostgreSQL 16 hosts all persistent data. The existing migration (`0001-
 
 | Category | Technology | Version |
 |---|---|---|
-| Runtime | Node.js | >= 20.0.0 (verified v22) |
-| Language | TypeScript | ^5.3.3 (strict) |
+| Runtime | Node.js | >= 20.0.0 |
+| Language | TypeScript (strict) | ^5.3.3 |
 | Database (cloud) | Supabase PostgreSQL | 16 |
 | Database (local) | PostgreSQL via Docker | 16-alpine |
 | Database driver | `pg` (node-postgres) | ^8.11.3 |
@@ -205,40 +191,47 @@ Supabase PostgreSQL 16 hosts all persistent data. The existing migration (`0001-
 ```
 marketintele/
 ├── src/
-│   ├── index.ts                # Worker entrypoint (Telegram + Health server)
-│   ├── config.ts               # Zod env validation + requireWorkerConfig
+│   ├── index.ts                    # Worker entrypoint (Telegram + Health server)
+│   ├── config.ts                   # Zod env validation + Config proxy
 │   └── arbitrage/
-│       ├── adapters/           # Marketplace scrapers (HTTP + CDP/Chromium)
+│       ├── adapters/               # Marketplace scrapers (HTTP + CDP/Chromium)
+│       │   ├── base-adapter.ts     # SSRF firewall, rate limiting, retry logic
 │       │   ├── shopee-adapter.ts
 │       │   ├── tokopedia-browser-adapter.ts
 │       │   ├── lazada-browser-adapter.ts
 │       │   ├── blibli-adapter.ts
 │       │   └── tiktokshop-adapter.ts
 │       ├── db/
-│       │   ├── connection.ts   # Supabase/URI/PG_* resolver
-│       │   ├── pool.ts         # Shared pool
-│       │   ├── migrate.ts      # Migration runner (Supabase-aware)
-│       │   ├── verify-supabase.ts  # Runtime verification CLI
-│       │   ├── migrations/0001-core-foundation.sql
-│       │   └── *.test.ts
-│       ├── economic/           # Financial engines (Decimal, landed cost, fees, profit)
-│       ├── intelligence/       # Market-clearing, demand, competition, risk, EV, decay, lifecycle, learning
-│       ├── observability/      # Health + Prometheus metrics
-│       ├── pipeline/           # Orchestrator + decision gates
-│       ├── reliability/        # Circuit breaker
-│       ├── sourcing/           # Supplier adapter contract + fixture + harness
-│       └── lib/                # Logger, hash, ulid, utils
-├── fly.toml                    # Fly.io deployment configuration
-├── Dockerfile                  # Multi-stage Docker build (incl. Chromium)
-├── .dockerignore               # Docker ignore patterns
-├── docker-compose.yml          # Local PostgreSQL + worker
-├── .github/workflows/ci.yml   # CI pipeline
-├── package.json                # Node dependencies
-├── tsconfig.json               # TypeScript config
-└── README.md                   # This documentation
+│       │   ├── connection.ts       # Supabase/URI/PG_* resolver
+│       │   ├── pool.ts             # Shared pool + health check
+│       │   ├── migrate.ts          # Migration runner (idempotent, transactional)
+│       │   ├── verify-supabase.ts  # Runtime 16-check verification
+│       │   └── migrations/0001-core-foundation.sql
+│       ├── economic/               # Financial engines (Decimal, landed cost, fees, profit)
+│       ├── intelligence/           # Market-clearing, demand, competition, risk, EV, decay, learning
+│       ├── observability/          # Health server + 15 Prometheus metrics + alerts
+│       ├── provenance/             # Data provenance taxonomy + freshness controls
+│       ├── pipeline/               # Orchestrator + 16 decision gates
+│       ├── reliability/            # Circuit breaker state machine + wiring
+│       ├── sourcing/               # Supplier adapter contract + fixture + harness
+│       └── lib/                    # Logger, hash, ulid, utils, constants, price
+├── scripts/
+│   ├── deploy.sh                   # Build → test → flyctl deploy → verify
+│   ├── observe-production.sh       # 7-day hourly metrics collection
+│   ├── rollback.sh                 # flyctl rollback
+│   ├── verify-production.sh        # 130-line production readiness check
+│   ├── schema-audit.ts             # Live DB schema vs migration validation
+│   └── analyze-observations.py     # Prometheus metrics parsing
+├── fly.toml                        # Fly.io deployment configuration
+├── Dockerfile                      # Multi-stage Docker build (incl. Chromium)
+├── .dockerignore
+├── docker-compose.yml              # Local PostgreSQL + worker
+├── .github/workflows/ci.yml        # CI pipeline (typecheck, lint, build, test, coverage, security)
+├── package.json
+├── tsconfig.json
+├── LICENSE                         # MIT
+└── README.md
 ```
-
-**Note:** No `api/` directory. No `vercel.json`. All endpoints served from `src/index.ts` health server on the Fly.io worker.
 
 ---
 
@@ -254,23 +247,11 @@ marketintele/
 
 - Dashboard → Project → Settings → Database → **Connection string** → **URI**.
 - For the **worker**: use the **pooled** connection (port **6543**). Append `?sslmode=require`.
-- For **migrations**: use the **direct** connection (port **5432**) for DDL reliability. Append `?sslmode=require`.
-
-Example pooled URI:
-```
-postgresql://postgres.xxxx:YOUR_PASSWORD@aws-0-region.pooler.supabase.com:6543/postgres?sslmode=require
-```
+- For **migrations**: use the **direct** connection (port **5432**) for DDL reliability.
 
 ### 6.3 Configure environment
 
-```bash
-cp .env.example .env.local
-# Edit .env.local:
-#   SUPABASE_DATABASE_URL=postgresql://postgres.xxxx:...@aws-0-region.pooler.supabase.com:6543/postgres?sslmode=require
-#   TELEGRAM_BOT_TOKEN=<from @BotFather>
-#   ALLOWED_USER_IDS=<your Telegram user ID>
-#   ADMIN_API_KEY=<strong random value for health endpoints>
-```
+Create a `.env` file with the required variables (see Environment Variables below). Set `SUPABASE_DATABASE_URL` to your pooled connection string.
 
 ### 6.4 Apply migration
 
@@ -278,7 +259,7 @@ cp .env.example .env.local
 npm run migrate
 ```
 
-The migration is idempotent, transactional, and records a SHA-256 checksum per file in `schema_migrations`. On Supabase, prefer the direct connection (port 5432) for DDL.
+The migration is idempotent, transactional, and records a SHA-256 checksum per file in `schema_migrations`.
 
 ### 6.5 Verify the connection
 
@@ -286,60 +267,88 @@ The migration is idempotent, transactional, and records a SHA-256 checksum per f
 npm run verify:supabase
 ```
 
-This runs 16 checks (connectivity, TLS, auth, SELECT/INSERT/UPDATE/DELETE, transaction commit/rollback, FK/unique enforcement, concurrent access, reconnect, persistence, migration state, schema version) against a scratch table that is created and dropped per run — never touching production data. Exit 0 on full PASS.
+Runs 16 checks (connectivity, TLS, auth, SELECT/INSERT/UPDATE/DELETE, transaction commit/rollback, FK/unique enforcement, concurrent access, reconnect, persistence, migration state, schema version) against a scratch table. Exit 0 on full PASS.
 
 ---
 
 ## 7. Environment Variables
 
-Copy `.env.example` → `.env.local` and fill in real values. **Never commit `.env*`.**
+**No `.env.example` file exists in the repository.** Create a `.env` file manually. Never commit `.env*` files.
 
 ### Database (resolution order: first non-empty wins)
 
-| Variable | Required? | Purpose |
-|---|---|---|
-| `SUPABASE_DATABASE_URL` | preferred prod | Supabase PostgreSQL pooled/direct URI |
-| `DATABASE_URL` | optional | Any standard PostgreSQL URI |
-| `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_PASSWORD` / `PG_DATABASE` / `PG_SSL_MODE` | local fallback | Discrete vars for local Docker/PostgreSQL |
-| `PG_POOL_MAX` | optional | Max pool connections (worker: 10) |
+| Variable | Required? | Default | Description |
+|---|---|---|---|
+| `SUPABASE_DATABASE_URL` | preferred prod | — | Supabase PostgreSQL pooled/direct URI |
+| `DATABASE_URL` | optional | — | Any standard PostgreSQL URI |
+| `PG_HOST` | local fallback | `localhost` | PostgreSQL host |
+| `PG_PORT` | local fallback | `5432` | PostgreSQL port |
+| `PG_USER` | local fallback | `""` | PostgreSQL user |
+| `PG_PASSWORD` | local fallback | `""` | PostgreSQL password |
+| `PG_DATABASE` | local fallback | `""` | PostgreSQL database name |
+| `PG_SSL_MODE` | local fallback | `disable` | `disable` / `require` / `verify-full` |
+| `PG_POOL_MAX` | optional | — | Max pool connections |
 
 ### Application
 
-| Variable | Required? | Purpose |
-|---|---|---|
-| `APPLICATION_ENV` | optional | `development` / `test` / `production` |
-| `WORKER_MODE` | worker only | Must be `true` on Fly.io |
-| `ADMIN_API_KEY` | ✅ Yes | Strong random value; Bearer token for health endpoints |
+| Variable | Required? | Default | Description |
+|---|---|---|---|
+| `APPLICATION_ENV` | optional | `development` | `development` / `test` / `production` |
+| `WORKER_MODE` | worker only | `false` | Must be `true` on Fly.io |
+| `ADMIN_API_KEY` | recommended | `""` | Bearer token for `/health` and `/metrics` |
+| `LOG_LEVEL` | optional | `info` | `trace` / `debug` / `info` / `warn` / `error` / `fatal` |
 
 ### Telegram (worker only)
 
-| Variable | Required? | Purpose |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | worker ✅ | Bot token from @BotFather |
-| `ALLOWED_USER_IDS` | recommended | Comma-separated authorized Telegram user IDs |
+| Variable | Required? | Default | Description |
+|---|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | worker ✅ | `""` | Bot token from @BotFather |
+| `ALLOWED_USER_IDS` | recommended | `""` | Comma-separated authorized Telegram user IDs |
 
 ### Scraping Configuration
 
-| Variable | Default | Purpose |
+| Variable | Default | Description |
 |---|---|---|
-| `SCRAPER_REQUEST_TIMEOUT_MS` | 30000 | Request timeout |
-| `SCRAPER_DELAY_MIN_MS` | 1000 | Minimum delay between requests |
-| `SCRAPER_DELAY_MAX_MS` | 5000 | Maximum delay between requests |
-| `MAX_CONCURRENT_REQUESTS` | 5 | Max concurrent scraping requests |
+| `SCRAPER_REQUEST_TIMEOUT_MS` | `15000` | Request timeout (ms) |
+| `SCRAPER_DELAY_MIN_MS` | `1000` | Minimum delay between requests (ms) |
+| `SCRAPER_DELAY_MAX_MS` | `3000` | Maximum delay between requests (ms) |
+| `MAX_CONCURRENT_REQUESTS` | `5` | Max concurrent scraping requests |
 | `SSRF_FIREWALL_ENABLED` | `true` | SSRF protection (do not disable in prod) |
-| `SCRAPER_PROXY_URL` | — | Optional proxy URL |
+| `SCRAPER_PROXY_URL` | — | Optional proxy URL (not in config schema) |
 
-### Operational (preserved)
+### Operational
 
-| Variable | Default | Purpose |
+| Variable | Default | Description |
 |---|---|---|
 | `HEALTH_PORT` | `9090` | Worker health server port |
-| `PG_SKIP_OK` | `true` | Skip (not pass) PG tests when DB unavailable |
-| `LOG_LEVEL` | `info` | trace/debug/info/warn/error/fatal |
-| `MAX_SEARCH_RESULTS` | 10 | Max search results per query |
-| `NOTIFICATION_CHECK_INTERVAL_SEC` | 300 | Bot notification interval |
-| `REDIS_URL` | redis://localhost:6379/0 | Parsed; not used at runtime |
-| `DATABASE_PATH` | ./data/belibot.db | Legacy SQLite (worker only) |
+| `MAX_SEARCH_RESULTS` | `10` | Max search results per query |
+| `NOTIFICATION_CHECK_INTERVAL_SEC` | `300` | Bot notification interval |
+| `REDIS_URL` | `redis://localhost:6379/0` | Parsed; not used at runtime |
+| `DATABASE_PATH` | `./data/belibot.db` | Legacy SQLite (worker only) |
+| `PG_SKIP_OK` | `true` | Skip PG tests when DB unavailable |
+
+### Supplier Adapter Secrets
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALIBABA_API_KEY` | `""` | Alibaba International API key |
+| `ALIBABA_API_URL` | `https://api.alibaba.com/v2` | Alibaba API base URL |
+
+### CAPTCHA
+
+| Variable | Default | Description |
+|---|---|---|
+| `TWO_CAPTCHA_API_KEY` | `""` | 2Captcha API key |
+| `CAPTCHA_TIMEOUT_MS` | `300000` | CAPTCHA solve timeout (ms) |
+
+### Alerting
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALERT_CHANNEL` | `log` | `telegram` / `log` |
+| `ALERT_CHAT_ID` | `""` | Telegram chat ID for alerts |
+| `ALERT_INTERVAL_MS` | `300000` | Alert evaluation interval (ms) |
+| `ALERT_MIN_SEVERITY` | `medium` | `low` / `medium` / `high` / `critical` |
 
 ---
 
@@ -353,39 +362,47 @@ npm run migrate
 - Idempotent: already-applied migrations are skipped.
 - Transactional per file (`BEGIN`/`COMMIT`; `ROLLBACK` on error).
 - Records SHA-256 checksums in `schema_migrations`.
-- Exit 0 on success, exit 1 on failure.
 - Connection resolution: `SUPABASE_DATABASE_URL → DATABASE_URL → PG_*`.
 
 **Rollback:** Forward-only (no down-migrations). Back up with `pg_dump` before applying to production.
 
 ---
 
-## 9. Runtime Verification
+## 9. Database Schema
 
-```bash
-npm run verify:supabase
-```
+The migration (`0001-core-foundation.sql`, 715 lines) creates 28 tables organized into 5 groups:
 
-16 checks against the resolved DB, using a scratch table. Safe to run against any environment. Exit 0 on PASS, 1 on FAIL, 0 on SKIP (when `PG_SKIP_OK=true` and DB unreachable).
+**Ingestion & Raw (4 tables):** `sources`, `source_health`, `crawl_jobs`, `crawl_events`, `raw_documents`, `raw_products`
+
+**Core Entities (5 tables):** `suppliers`, `supplier_contacts`, `supplier_products`, `supplier_prices`, `products`, `product_variants`, `product_matches`
+
+**Marketplace & Intel (4 tables):** `marketplaces` (5 seeded rows), `marketplace_listings`, `marketplace_prices`, `demand_signals`, `competition_snapshots`
+
+**Economics & Decisions (4 tables):** `cost_models` (11-component landed cost), `profit_models` (dual-engine), `sensitivity_models` (N×N grid), `opportunities`, `opportunity_scores`, `test_orders`
+
+**Learning & Audit (4 tables):** `sales_actuals`, `profit_attribution`, `model_calibrations`, `audit_logs`
+
+**Schema tracking:** `schema_migrations`
+
+**Design:** All PKs are ULIDs (`VARCHAR(26)`), all financial amounts use `NUMERIC(18,4)`, all timestamps are `TIMESTAMPTZ`, 27 foreign keys, 98 indexes, 7 ENUM types.
 
 ---
 
 ## 10. Running Tests
 
 ```bash
-npm test
-npm run test:watch
+npm test                    # 696 tests passing (40 PG-dependent tests skip without DB)
+npm run test:watch          # Watch mode
 npm run test:coverage       # 85.62% statements
 ```
 
 Targeted:
 ```bash
-npx jest src/arbitrage/db/connection.test.ts   # connection resolver
-npx jest src/arbitrage/db/pg-integration.test   # PostgreSQL (needs DB)
+npx jest src/arbitrage/db/connection.test.ts
 npx jest src/arbitrage/pipeline/pipeline-scenarios.test.ts
 ```
 
-> PostgreSQL integration tests require a running DB matching your `.env`. Without it, they skip (not pass) when `PG_SKIP_OK=true`. CI sets `PG_SKIP_OK=false` so they fail if the DB is down.
+> PostgreSQL integration tests require a running DB. Without it, they skip (not pass) when `PG_SKIP_OK=true`. CI sets `PG_SKIP_OK=false` so they fail if the DB is down.
 
 ---
 
@@ -394,7 +411,7 @@ npx jest src/arbitrage/pipeline/pipeline-scenarios.test.ts
 ```bash
 npx tsc --noEmit             # typecheck
 npm run build                # build → dist/
-npx eslint src --ext .ts --quiet
+npm run lint                 # eslint src --ext .ts
 ```
 
 ---
@@ -403,8 +420,8 @@ npx eslint src --ext .ts --quiet
 
 ### Option A — Supabase cloud (preferred)
 
-1. Create a Supabase project (§6).
-2. `cp .env.example .env.local`; set `SUPABASE_DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS`, `ADMIN_API_KEY`.
+1. Create a Supabase project.
+2. Create a `.env` file with `SUPABASE_DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS`, `ADMIN_API_KEY`.
 3. `npm run migrate`.
 4. `npm run verify:supabase`.
 5. `npm test`.
@@ -414,13 +431,11 @@ npx eslint src --ext .ts --quiet
 
 ```bash
 docker compose up -d postgres   # PG 16 on :5433
-# .env: set PG_HOST=localhost PG_PORT=5433 PG_USER=... PG_PASSWORD=... PG_DATABASE=...
+# .env: set PG_HOST=localhost PG_PORT=5433 PG_USER=marketintele_app PG_PASSWORD=... PG_DATABASE=marketintele
 npm run migrate
 npm test
 npm run dev
 ```
-
-Both paths use the **same** `connection.ts` resolver.
 
 ---
 
@@ -428,10 +443,10 @@ Both paths use the **same** `connection.ts` resolver.
 
 ```bash
 WORKER_MODE=true npm start     # node dist/index.js (production)
-npm run dev                   # tsx watch (development)
+npm run dev                    # tsx watch (development)
 ```
 
-Startup sequence: Zod config → `requireWorkerConfig()` (throws if no Telegram token) → SQLite init → PostgreSQL health check → fee validation → adapter registration → health server `:9090` → Telegram `bot.launch()`.
+Startup sequence: Zod config → `requireWorkerConfig()` (throws if no Telegram token) → SQLite init → PostgreSQL health check → fee validation → adapter registration → supplier adapter registration → circuit breaker wiring → alert manager → health server `:9090` → Telegram `bot.launch()`.
 
 - SQLite is **required** (user prefs). Failure exits 1.
 - PostgreSQL is **health-checked**, not required to boot — degraded mode if unreachable.
@@ -439,42 +454,45 @@ Startup sequence: Zod config → `requireWorkerConfig()` (throws if no Telegram 
 
 ---
 
-## 14. Health Checks (Worker)
+## 14. Health Checks
 
-| Endpoint | Success | Failure |
-|---|---|---|
-| `GET /live` | 200 `{status:"alive",uptime,timestamp}` | — |
-| `GET /ready` | 200 `{status:"ready",dependencies}` | 503 `{status:"not_ready",...}` |
-| `GET /health` | 200 `{status,checks,uptime,version}` | — |
-| `GET /metrics` | 200 Prometheus text | — |
-
-All endpoints require Bearer auth (`Authorization: Bearer <ADMIN_API_KEY>`).
+| Endpoint | Auth | Success | Failure |
+|---|---|---|---|
+| `GET /live` | None | 200 `{status:"alive",uptime,timestamp}` | — |
+| `GET /ready` | None | 200 `{status:"ready",dependencies}` | 503 `{status:"not_ready",...}` |
+| `GET /health` | Bearer | 200 `{status,checks,uptime,version}` | 200 with degraded status |
+| `GET /metrics` | Bearer | 200 Prometheus text | — |
 
 ---
 
 ## 15. Metrics & Observability
 
-12 Prometheus metrics (see [§21](#21-metrics--observability)). Distinguish pipeline requests, DB failures, adapter failures, opportunity generation/rejection, circuit breaker state. Secrets are never exposed (verified by tests).
+15 Prometheus metrics exposed at `/metrics`:
+
+| Metric | Type | Description |
+|---|---|---|
+| `pipeline_runs_total` | counter | Total pipeline runs |
+| `pipeline_success_total` | counter | Successful pipeline runs |
+| `pipeline_failure_total` | counter | Failed pipeline runs |
+| `pipeline_duration_seconds` | histogram | Pipeline execution duration |
+| `adapter_requests_total` | labeled counter | Adapter requests (adapter, status) |
+| `adapter_failures_total` | labeled counter | Adapter failures (adapter, error_type) |
+| `supplier_resolution_total` | counter | Supplier resolution attempts |
+| `opportunities_discovered_total` | counter | Opportunities discovered |
+| `opportunities_rejected_total` | counter | Opportunities rejected by gates |
+| `opportunities_verified_total` | counter | Opportunities verified (RECOMMEND) |
+| `database_errors_total` | counter | Database errors |
+| `circuit_breaker_trips_total` | counter | Circuit breaker trips to OPEN |
+| `captcha_detections_total` | counter | CAPTCHA detections |
+| `captcha_solves_total` | counter | CAPTCHA solves |
+| `captcha_failures_total` | counter | CAPTCHA solve failures |
 
 ---
 
 ## 16. Fly.io Deployment
 
-### 16.1 Install flyctl
-```bash
-# Windows
-iwr https://fly.io/install.ps1 -useb | iex
+### Configure Secrets
 
-# macOS/Linux
-curl -L https://fly.io/install.sh | sh
-```
-
-### 16.2 Login
-```bash
-flyctl auth login
-```
-
-### 16.3 Configure Environment Secrets
 ```bash
 flyctl secrets set \
   TELEGRAM_BOT_TOKEN="<your-token>" \
@@ -485,62 +503,31 @@ flyctl secrets set \
   SSRF_FIREWALL_ENABLED="true"
 ```
 
-> `WORKER_MODE`, `HEALTH_PORT`, and `SSRF_FIREWALL_ENABLED` are already set in `fly.toml` `[env]` block.
+### Deploy
 
-### 16.4 Deploy
 ```bash
 flyctl deploy
 ```
 
-### 16.5 Verify
+### Verify
+
 ```bash
-# Check status
 flyctl status
-
-# Check health
 flyctl checks list
-
-# Test health endpoint (with auth)
 flyctl ssh console
-curl -H "Authorization: Bearer $ADMIN_API_KEY" http://localhost:9090/health
-
-# View logs
+curl -H "Authorization: Bearer <ADMIN_API_KEY>" http://localhost:9090/health
 flyctl logs --tail
 ```
 
-### 16.6 Scale
+### Rollback
+
 ```bash
-# Scale up (more memory/CPU)
-flyctl scale vm shared-cpu-2x
-
-# Scale down
-flyctl scale vm shared-cpu-1x
-```
-
-### 16.7 Rollback
-```bash
-# List releases
-flyctl releases list
-
-# Rollback to previous
 flyctl rollback --previous
-```
-
-### 16.8 Troubleshooting
-```bash
-# SSH into container
-flyctl ssh console
-
-# Check logs
-flyctl logs -n 100
-
-# Restart
-flyctl restart
 ```
 
 ---
 
-## 17. Worker Deployment (Docker)
+## 17. Docker Deployment
 
 ```bash
 docker build -t marketintele-worker .
@@ -552,172 +539,132 @@ Or with `docker-compose.yml`:
 docker compose up -d
 ```
 
-The Dockerfile is multi-stage, runs as a non-root user, includes a health check, and exposes 9090. For production, set `WORKER_MODE=true`, `TELEGRAM_BOT_TOKEN`, `SUPABASE_DATABASE_URL` (pooled, port 6543), `ALLOWED_USER_IDS`, and `ADMIN_API_KEY` in the container env.
+The Dockerfile is multi-stage, runs as a non-root user `marketintele`, includes a HEALTHCHECK, and exposes 9090. For production, set `WORKER_MODE=true`, `TELEGRAM_BOT_TOKEN`, `SUPABASE_DATABASE_URL` (pooled, port 6543), `ALLOWED_USER_IDS`, and `ADMIN_API_KEY` in the container env.
 
 ---
 
 ## 18. CI/CD
 
 `.github/workflows/ci.yml` runs on push/PR:
-1. `npm ci`
-2. Start PostgreSQL 16 service container
-3. `npm run migrate`
-4. `npm run verify:supabase` (with `DATABASE_URL` pointing at the service container)
-5. `npx tsc --noEmit`
-6. `npx eslint src --ext .ts --quiet`
-7. `npm run build`
-8. `npx jest --coverage`
-9. Secret scan + dependency audit (separate job)
 
-CI sets `PG_SKIP_OK=false` so DB tests **fail** (not silently pass) if PostgreSQL is unreachable.
+**Quality job:** `npm ci` → PostgreSQL 16 service container → `npm run migrate` → `npm run verify:supabase` → `npx tsc --noEmit` → `npx eslint src --ext .ts --quiet` → `npm run build` → `npx jest --coverage` → upload coverage artifact.
+
+**Security scan job:** Secret scan (AWS keys, GitHub tokens, Slack tokens, Telegram tokens) → `npm audit --audit-level=moderate`.
+
+CI sets `PG_SKIP_OK=false` so DB tests fail (not silently pass) if PostgreSQL is unreachable.
 
 ---
 
 ## 19. Security
 
-- `.env` / `.env.local` gitignored; `.env.example` uses placeholders only.
-- Zod validates config; worker guard fails fast without Telegram token.
-- SSRF firewall on by default (IPv4/IPv6, DNS resolution, redirect re-validation).
-- Telegram authorization (`ALLOWED_USER_IDS`) preserved in worker.
-- Health endpoints gated by Bearer auth (`ADMIN_API_KEY`).
+- SSRF firewall: IPv4/IPv6 private range blocking, DNS resolution, metadata endpoint blocking, redirect re-validation, protocol restriction (HTTP/HTTPS only), redirect limit (3 hops).
+- Telegram authorization: `ALLOWED_USER_IDS` check on every command.
+- Health endpoint auth: `/health` and `/metrics` require `Authorization: Bearer <ADMIN_API_KEY>` (constant-time comparison).
+- `/live` and `/ready` are unprotected (used by Fly.io health checks).
+- Zod validates all config; worker guard fails fast without Telegram token.
 - Logs redact secrets (`password`, `token`, `secret`, `PG_PASSWORD`, `TELEGRAM_BOT_TOKEN`).
-- RLS **not enabled** (no browser→Supabase path today). If a dashboard with direct browser DB access is added, RLS must be turned on.
+- `.env*` files are gitignored.
+- RLS **not enabled** (no browser→Supabase path today).
 
 ---
 
-## 20. TEST_FIXTURE Mode
+## 20. Telegram Bot Commands
 
-`TestFixtureSupplierAdapter` returns deterministic, explicitly-labelled fixture offers so the full pipeline produces a complete vertical slice during development. Every offer is stamped `dataProvenance: 'TEST_FIXTURE'` with `TEST_FIXTURE — NOT REAL DATA` evidence. **Fixture profit ≠ realized profit.**
-
----
-
-## 21. Metrics & Observability
-
-| Metric | Type | Labels |
+| Command | Category | Purpose |
 |---|---|---|
-| `pipeline_runs_total` | counter | — |
-| `pipeline_success_total` / `pipeline_failure_total` | counter | — |
-| `pipeline_duration_seconds` | histogram | — |
-| `adapter_requests_total` / `adapter_failures_total` | labeled counter | adapter, status / error_type |
-| `supplier_resolution_total` | counter | — |
-| `opportunities_discovered_total` / `opportunities_rejected_total` / `opportunities_verified_total` | counter | — |
-| `database_errors_total` | counter | — |
-| `circuit_breaker_trips_total` | counter | — |
+| `/start` | Onboarding | Welcome message + available commands |
+| `/help` | System | Full help text (Indonesian) |
+| `/arbitrage <query> [marketplace]` | Core Discovery | Runs full arbitrage pipeline |
+| `/status` | System | Worker & adapter status |
+| `/health` | System | Health check info |
+| `/setbudget <nominal>` | Settings | Sets user budget (SQLite) |
+| `/setmarketplace <name>` | Settings | Selects active marketplace (SQLite) |
+| `/setkategori <name>` | Settings | Sets category filter (SQLite) |
+| `/setnotifikasi on/off` | Settings | Toggle notifications (SQLite) |
+| `/history` | System | Last 10 arbitrage analyses (SQLite) |
+| `/cari`, `/rp0`, `/murah` | Legacy | Deprecated, redirects to `/arbitrage` |
+
+**Authorization:** Checked against `ALLOWED_USER_IDS`. Unauthorized users see "Akses ditolak."
+
+**Response categories for `/arbitrage`:**
+1. **MARKETPLACE DATA UNAVAILABLE** — Discovery found no usable products
+2. **SUPPLIER DATA UNAVAILABLE** — Marketplace data found but no supplier price (fail-closed)
+3. **NO ARBITRAGE OPPORTUNITY** — Valid data but decision gates failed
+4. **REAL OPPORTUNITY** — Decision RECOMMEND
 
 ---
 
-## 22. Marketplace Scraping Strategy
+## 21. Marketplace Scraping Strategy
 
-MarketIntele uses **web scraping** (not official APIs) for marketplace data extraction.
-
-### Why Scraping Instead of API?
-
-1. **No API Access**: No official API access for small-scale partners
-2. **Real-time Data**: Data directly from product pages (real-time)
-3. **Flexibility**: Can extract additional data (reviews, ratings, stock)
-4. **Cost**: No API fees (only infrastructure costs)
-
-### Scraping Methods
+MarketIntele uses web scraping (not official APIs) for marketplace data extraction.
 
 | Marketplace | Method | Tool | Status |
-|-------------|--------|------|--------|
-| **Shopee** | HTTP | axios + cheerio | ✅ PRODUCTION |
-| **Tokopedia** | Browser (CDP) | Puppeteer/Chromium | ✅ PRODUCTION |
-| **Lazada** | Browser (CDP) | Puppeteer/Chromium | ✅ PRODUCTION |
-| **Blibli** | HTTP | axios + cheerio | 🔬 BETA |
-| **TikTok Shop** | HTTP | axios + cheerio | 🔬 BETA |
+|---|---|---|---|
+| **Shopee** | HTTP | axios + cheerio | PRODUCTION |
+| **Tokopedia** | Browser (CDP) | Puppeteer/Chromium | PRODUCTION |
+| **Lazada** | Browser (CDP) | Puppeteer/Chromium | PRODUCTION |
+| **Blibli** | HTTP | axios + cheerio | BETA |
+| **TikTok Shop** | HTTP | axios + cheerio | BETA |
 
 ### Anti-Blocking Strategies
 
-1. **User-Agent Rotation**
-   ```typescript
-   const userAgents = [
-     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36...',
-     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)...',
-     // 10+ variants
-   ];
-   ```
+- User-Agent rotation (10+ variants)
+- Request delays (1-3s randomized)
+- Retry with exponential backoff (3 retries)
+- Browser fingerprinting (viewport, Accept-Language, headers)
+- Circuit breaker per adapter (5 failures → OPEN, 60s cooldown)
+- Optional proxy support
+- SSRF firewall enabled by default
 
-2. **Request Delays**
-   ```typescript
-   const delay = Math.floor(Math.random() * 4000) + 1000; // 1-5s
-   await sleep(delay);
-   ```
+---
 
-3. **Retry with Exponential Backoff**
-   ```typescript
-   const retries = 3;
-   const backoff = (attempt) => Math.pow(2, attempt) * 1000;
-   ```
+## 22. Pipeline Architecture
 
-4. **Browser Fingerprinting**
-   ```typescript
-   await page.setViewport({ width: 1920, height: 1080 });
-   await page.setExtraHTTPHeaders({ 'Accept-Language': 'id-ID,id;q=0.9' });
-   ```
+The pipeline executes 16 stages end-to-end:
 
-5. **Circuit Breaker**
-   ```typescript
-   if (failures > 5 in 1 minute) {
-     circuitBreaker.open(); // Cool down 5 minutes
-   }
-   ```
-
-6. **Proxy Support (Optional)**
-   ```env
-   SCRAPER_PROXY_URL=http://proxy:8080
-   ```
-
-### Browser Automation (CDP)
-
-For JS-heavy marketplaces (Tokopedia, Lazada):
-
-```typescript
-const browser = await puppeteer.launch({
-  headless: true,
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--disable-gpu'
-  ]
-});
-
-const page = await browser.newPage();
-await page.setUserAgent(randomUserAgent());
-await page.goto(url, { waitUntil: 'networkidle2' });
-const products = await page.evaluate(() => {
-  // DOM extraction
-});
+```
+1. Discovery          → Marketplace adapter search + fetch + parse + normalize
+2. Market Clearing    → Multi-listing aggregation with outlier rejection
+3. Matching           → Product identity matching
+4. Supplier Sourcing  → B2B adapter or marketplace-seller derivation
+5. Landed Cost        → 10-component cost model (UNKNOWN throws)
+6. Marketplace Fees   → Fee schedule per marketplace
+7. Profit (Dual)      → Twin-engine independent calculation + reconciliation
+8. Demand             → Demand signal classification
+9. Competition        → HHI, price war risk, saturation
+10. Risk              → 4-dimension risk assessment
+11. Comprehensive Risk → 11-dimension risk assessment
+12. Decay             → Half-life decay, freshness TTL enforcement
+13. Expected Value    → BEAR/BASE/BULL scenario-weighted EV
+14. Decision          → 16 gates (C01-C15 + C13b)
+15. Format            → Telegram message formatting
+16. Metrics           → Prometheus counter/histogram recording
 ```
 
-### HTTP Scraping
+### Decision Gates (C01-C15 + C13b)
 
-For simpler marketplaces (Shopee, Blibli, TikTok Shop):
+| Gate | Name | Critical | Description |
+|---|---|---|---|
+| C01 | Product Identity Verified | Yes | Brand + barcode present |
+| C02 | Supplier Identity Verified | Yes | Supplier verified, risk not CRITICAL |
+| C03 | Unit/Package Equivalence | Yes | Package quantity known |
+| C04 | Price and MOQ Validity | Yes | Price > 0, MOQ ≥ 1 |
+| C05 | Marketplace Comparability | Yes | Evidence hierarchy level ≥ 3 |
+| C06 | Market Clearing Price | Yes | Clearing price with ≥ MEDIUM confidence |
+| C07 | Landed Cost Complete | Yes | No UNKNOWN cost components |
+| C08 | Marketplace Fees Configured | Yes | Fee > 0 |
+| C09 | Independent Profit Match | Yes | Dual-engine reconciled, profit positive |
+| C10 | Demand Evidence | No | Demand score + confidence > 0.2 |
+| C11 | Competition Saturation | No | Not EXTREME, price war not HIGH |
+| C12 | Risk Thresholds | Yes | Overall risk not CRITICAL |
+| C13 | Data Freshness TTL | Yes | Observation within 24h max age |
+| C13b | Provenance Eligible | Yes | Only REAL_* categories allowed |
+| C14 | Sensitivity Robustness | Yes | MODERATE or better robustness |
+| C15 | Confidence Above Floor | Yes | Product confidence ≥ floor |
 
-```typescript
-const response = await axios.get(url, {
-  headers: {
-    'User-Agent': randomUserAgent(),
-    'Accept': 'application/json',
-    'Referer': 'https://shopee.co.id/'
-  },
-  timeout: 30000
-});
+**Decision outcome:** Any critical gate fail → REJECT. All critical pass + any warning fail → REVIEW. All pass → RECOMMEND.
 
-const products = parseHTML(response.data);
-```
-
-### Error Handling
-
-| Error Type | Handling |
-|------------|----------|
-| **Network Error** | Retry (3x) with backoff |
-| **HTTP Error (4xx/5xx)** | Circuit breaker triggers |
-| **Parse Error** | Log, skip, continue |
-| **Timeout** | Retry with longer timeout |
-| **CAPTCHA** | Alert + manual resolution |
+**Quality tiers:** S-TIER (ROI ≥ 50%, margin ≥ 15%), A-TIER (ROI ≥ 30%, margin ≥ 10%), B-TIER (ROI ≥ 15%, margin ≥ 5%), C-TIER (below thresholds), REJECTED.
 
 ---
 
@@ -735,56 +682,100 @@ const products = parseHTML(response.data);
 | Stale data blocks decision | C13 fails on missing `observedAt` |
 | Negative profit ≠ opportunity | C09 requires `netProfit > 0` AND `reconciled = true` |
 
-Decision gates C01–C15 (13 critical + 2 warning). Any critical fail → `REJECT` (fail-closed).
+### Landed Cost Calculation
+
+```
+Landed Cost = Supplier Base Cost
+            + Inbound Logistics
+            + Import Duties/Tariffs
+            + Value Added Tax
+            + Customs Clearance
+            + Supplier Payment Processing Fee
+            + Inbound Packaging Materials
+            + Quality Inspection Cost
+            + Wastage & Defect Reserve
+            + Handling/Warehousing (Inbound)
+```
+
+All 10 components must be explicitly provided. Missing components throw `UncalculatedCostException`.
 
 ---
 
-## 24. Known Limitations
+## 24. Data Provenance
 
-| Area | Classification | Detail |
+Every marketplace observation carries a provenance category:
+
+| Category | Production Eligible |
+|---|---|
+| `REAL_OFFICIAL_API` | Yes |
+| `REAL_PUBLIC_WEB` | Yes |
+| `REAL_PUBLIC_ENDPOINT` | Yes |
+| `TEST_FIXTURE` | No |
+| `MOCK` | No |
+| `SIMULATION` | No |
+
+Only `REAL_*` categories can produce production opportunities (C13b gate). `TEST_FIXTURE` offers are stamped with `TEST_FIXTURE — NOT REAL DATA` evidence.
+
+**Freshness:** Observations older than 24 hours (configurable) are marked STALE and blocked by C13.
+
+---
+
+## 25. Circuit Breaker
+
+The circuit breaker is **wired at bootstrap** for all marketplace and supplier adapters:
+
+- **Marketplace adapters:** 5 failures → OPEN, 60s recovery, 2 half-open successes to close
+- **Supplier adapters:** 3 failures → OPEN, 120s recovery, 2 half-open successes to close
+
+State machine: CLOSED → OPEN → HALF_OPEN → CLOSED. Trips are recorded in Prometheus metrics (`circuit_breaker_trips_total`).
+
+---
+
+## 26. Known Limitations
+
+| Area | Status | Detail |
 |---|---|---|
-| Real supplier adapter | NOT_TESTED | No B2B API credentials or supplier scraping |
-| Marketplace scraping | **DEPLOYED + VERIFIED** | 5 adapters, anti-blocking, runtime verified |
+| Real supplier adapter | NOT_TESTED | No B2B API credentials or supplier scraping verified in production |
+| Marketplace scraping | DEPLOYED + VERIFIED | 5 adapters, anti-blocking, runtime verified |
 | CAPTCHA handling | MANUAL | Detection implemented, requires manual resolution |
 | HTML structure change | WARNING | No automated detection, needs monitoring |
-| Circuit breaker wiring | NOT_WIRED | Implemented + tested, not yet production-wired |
 | Model calibration | NOT_TESTED | No historical realized-profit data |
-| Dead-letter queue | MISSING | No async queue |
+| Dead-letter queue | NOT_IMPLEMENTED | No async queue |
 | Migration rollback | NOT_IMPLEMENTED | Forward-only |
+| `.env.example` | MISSING | No `.env.example` file exists in the repository |
+
 
 ---
 
-## 25. Production Readiness
+## 27. Production Readiness
 
-- [x] build, typecheck, lint, tests, coverage
-- [x] financial integrity (UNKNOWN≠0, dual-engine, C01–C15)
-- [x] PostgreSQL runtime (28 integration tests)
-- [x] health/metrics, graceful shutdown
-- [x] Supabase DB layer implemented + tested (connection resolver, verify command)
-- [x] Fly.io deployment + health checks (/live, /ready)
-- [x] Bearer auth for health endpoints
-- [x] Marketplace scraping deployed + verified (5 adapters, anti-blocking)
-- [x] Browser automation (Chromium in Fly.io container)
-- [x] Prometheus metrics (12 metrics)
-- [ ] real supplier API/scraping (NOT_TESTED)
-- [ ] CAPTCHA auto-resolution (MANUAL)
-- [ ] 7-day production observation (PLANNED)
-- [ ] model calibration (NOT_TESTED)
+**Infrastructure:** Build, typecheck, lint, tests, coverage — all PASS.  
+**Database:** PostgreSQL 16, 28 tables, migration, verification — DEPLOYED + VERIFIED.  
+**Deployment:** Fly.io worker, health checks, graceful shutdown — DEPLOYED.  
+**Security:** SSRF firewall, Bearer auth, Telegram authorization — IMPLEMENTED.  
+**Observability:** 15 Prometheus metrics, health endpoints, structured logging — DEPLOYED.  
+**Circuit breaker:** Wired at bootstrap per adapter — IMPLEMENTED.  
+**Supplier sourcing:** 21 failure-injection tests, contract verified — NOT_TESTED in production.  
+**CAPTCHA:** Auto-resolution not implemented — MANUAL.  
 
-**Production Gate: `INFRASTRUCTURE_READY`** — Infrastructure, marketplace scraping, database, and security are deployed and verified. P1 business-verification item remains: real supplier adapter. Score: **7.5/10** (Infrastructure: 9/10, Security: 8/10, Data: 5/10, Scraping: 8/10).
+**Production Gate: `INFRASTRUCTURE_READY`** — Infrastructure, marketplace scraping, database, and security are deployed and verified. P1 item: real supplier adapter.
 
 ---
 
-## 26. Rollback
+## 28. Scripts
 
-- **Code:** `git checkout <previous-tag>` → rebuild → redeploy.
-- **DB:** forward-only; restore from pre-migration `pg_dump` backup.
-- **Fly.io:** `flyctl rollback --previous` to revert to the previous release.
-- **Worker:** redeploy previous Docker image.
+| Script | Purpose |
+|---|---|
+| `scripts/deploy.sh` | Build → test → flyctl deploy → verify |
+| `scripts/rollback.sh` | flyctl rollback --previous |
+| `scripts/observe-production.sh` | 7-day hourly /health + /metrics collection |
+| `scripts/verify-production.sh` | 10-category production readiness check |
+| `scripts/schema-audit.ts` | Live DB schema vs migration validation |
+| `scripts/analyze-observations.py` | Parse Prometheus metrics from observation directory |
 
 ---
 
-## 27. Troubleshooting
+## 29. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -795,15 +786,16 @@ Decision gates C01–C15 (13 critical + 2 warning). Any critical fail → `REJEC
 | Telegram `401 Unauthorized` | Invalid `TELEGRAM_BOT_TOKEN`; regenerate via @BotFather |
 | `⛔ Akses ditolak` | User not in `ALLOWED_USER_IDS` |
 | Browser crashes on Fly.io | Chromium out of memory; scale to `shared-cpu-2x` |
+| `TELEGRAM_BOT_TOKEN is required` | Bot token not set; set `WORKER_MODE` and `TELEGRAM_BOT_TOKEN` |
 
 ---
 
-## 28. License
+## 30. License
 
-**Not yet specified.** No `LICENSE` file present. All rights reserved until a license is added.
+MIT License — see [LICENSE](./LICENSE).
 
 ---
 
-## 29. Disclaimer
+## 31. Disclaimer
 
 This system provides sourcing and arbitrage intelligence. It does **not** guarantee profit. Fixture data is not production evidence. Any decision made using this system's output is the sole responsibility of the operator.

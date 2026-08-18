@@ -36,7 +36,8 @@ describe('Configuration — Security', () => {
   it('PG_USER/PG_PASSWORD default to empty (schema-level) but worker still boots', () => {
     // The shared schema makes PG_* optional so the serverless API can import
     // the engine without a full DB env (the DB layer throws later if no
-    // connection can be resolved). This is intentional for Vercel compatibility.
+    // connection can be resolved). This is intentional for layered architecture
+    // compatibility — the worker entrypoint (src/index.ts) runs on Fly.io.
     const parsed = parseConfig({
       TELEGRAM_BOT_TOKEN: 'test',
       PG_HOST: 'localhost',
@@ -49,8 +50,8 @@ describe('Configuration — Security', () => {
   });
 
   it('TELEGRAM_BOT_TOKEN is optional at schema level (API compatibility)', () => {
-    // The schema allows an empty token so the Vercel API layer can import the
-    // engine without Telegram credentials. The WORKER guard enforces presence.
+    // The schema allows an empty token so the module can be imported without
+    // Telegram credentials. The WORKER guard enforces presence at runtime.
     const parsed = parseConfig({
       PG_HOST: 'localhost',
       PG_PORT: '5432',

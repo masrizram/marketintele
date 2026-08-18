@@ -210,6 +210,9 @@ metricsRegistry.registerCounter('opportunities_rejected_total', 'Total opportuni
 metricsRegistry.registerCounter('opportunities_verified_total', 'Total opportunities verified (RECOMMEND)');
 metricsRegistry.registerCounter('database_errors_total', 'Total database errors');
 metricsRegistry.registerCounter('circuit_breaker_trips_total', 'Total circuit breaker trips to OPEN');
+metricsRegistry.registerCounter('captcha_detections_total', 'Total CAPTCHA detections');
+metricsRegistry.registerCounter('captcha_solves_total', 'Total CAPTCHA solves');
+metricsRegistry.registerCounter('captcha_failures_total', 'Total CAPTCHA solve failures');
 
 // ── Convenience helpers ──────────────────────────────────────────────────────
 export function recordPipelineRun(success: boolean, durationSeconds: number): void {

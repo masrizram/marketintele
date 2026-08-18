@@ -16,6 +16,12 @@ import { validateFeeConfiguration } from './arbitrage/economic/fee-config';
 import { closePool, healthCheck as pgHealthCheck } from './arbitrage/db/pool';
 import { arbitragePipeline } from './arbitrage/pipeline/pipeline';
 import { startHealthServer, stopHealthServer } from './arbitrage/observability/health';
+import { supplierSourcingService } from './arbitrage/sourcing/supplier-sourcing-service';
+import { TestFixtureSupplierAdapter } from './arbitrage/sourcing/test-fixture-supplier-adapter';
+import { AlibabaSupplierAdapter } from './arbitrage/sourcing/alibaba-supplier-adapter';
+import { IndotradingSupplierAdapter } from './arbitrage/sourcing/indotrading-supplier-adapter';
+import { circuitBreakerRegistry, DEFAULT_ADAPTER_BREAKER_CONFIG, DEFAULT_SUPPLIER_BREAKER_CONFIG } from './arbitrage/reliability/circuit-breaker-wiring';
+import { alertManager } from './arbitrage/observability/alerts';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -79,6 +85,40 @@ async function bootstrap(): Promise<void> {
   const activeAdapters = adapterRegistry.getActive();
   logger.info(`ADAPTERS REGISTERED — ${activeAdapters.length} marketplace adapters active`);
 
+  // Step 5b: Register supplier adapters (IDEA §9–§12)
+  // Alibaba adapter (requires API key) — registered first for priority
+  if (config.alibabaApiKey && config.alibabaApiKey.trim().length > 0) {
+    supplierSourcingService.registerAdapter(
+      new AlibabaSupplierAdapter({ apiKey: config.alibabaApiKey, baseUrl: config.alibabaApiUrl }),
+    );
+    logger.info('SUPPLIER ADAPTER — Alibaba International registered');
+  } else {
+    logger.warn('SUPPLIER ADAPTER — Alibaba API key not configured (set ALIBABA_API_KEY)');
+  }
+
+  // Indotrading adapter (scraping-based, no API key needed)
+  supplierSourcingService.registerAdapter(new IndotradingSupplierAdapter());
+  logger.info('SUPPLIER ADAPTER — Indotrading B2B registered');
+
+  // Test fixture adapter (development fallback — always last priority)
+  if (config.applicationEnv !== 'production') {
+    supplierSourcingService.registerAdapter(new TestFixtureSupplierAdapter());
+    logger.info('SUPPLIER ADAPTER — TestFixture registered (development only)');
+  }
+
+  const hasRealSuppliers = supplierSourcingService.hasRealAdapters();
+  logger.info(`SUPPLIER SOURCING — ${hasRealSuppliers ? 'REAL' : 'TEST_FIXTURE'} data provenance`);
+
+  // Step 5c: Wire circuit breakers for each marketplace adapter
+  for (const adapter of activeAdapters) {
+    circuitBreakerRegistry.register(adapter.adapterName, DEFAULT_ADAPTER_BREAKER_CONFIG);
+  }
+  // Wire circuit breakers for each supplier adapter
+  for (const supplierAdapter of ['AlibabaSupplierAdapter', 'IndotradingSupplierAdapter', 'TestFixtureSupplierAdapter']) {
+    circuitBreakerRegistry.register(supplierAdapter, DEFAULT_SUPPLIER_BREAKER_CONFIG);
+  }
+  logger.info('CIRCUIT BREAKERS — Wired for all adapters');
+
   // Verify each adapter is callable by checking it implements the required interface
   for (const adapter of activeAdapters) {
     const hasSearch = typeof (adapter as any).search === 'function';
@@ -97,14 +137,21 @@ async function bootstrap(): Promise<void> {
   // Step 6: Wire the arbitrage pipeline into the Telegram bot
   logger.info('DEPENDENCIES READY — Arbitrage pipeline wired to Telegram bot');
 
-  // Step 6b: Start health/metrics HTTP server (IDEA §49 / AUDIT §50)
-  const healthPort = parseInt(process.env.HEALTH_PORT || '9090', 10);
+  // Step 6b: Start alert manager
+  alertManager.start(config.alertIntervalMs);
+  logger.info('ALERTING — Alert manager started');
+
+  // Step 6c: Start health/metrics HTTP server (IDEA §49 / AUDIT §50)
+  const healthPort = parseInt(process.env.HEALTH_PORT || config.healthPort.toString(), 10);
   const healthServer = startHealthServer(healthPort);
 
   // Step 7: Start Telegram bot
   try {
     const bot = createBot(arbitragePipeline);
     logger.info('TELEGRAM INITIALIZED — Bot created');
+
+    // Wire alert manager to the Telegram bot for alert delivery
+    alertManager.setBot(bot);
 
     // Surface Telegraf handler errors instead of letting the default handler
     // kill the process. The default handleError() calls process.exit(1) and
@@ -137,6 +184,11 @@ async function bootstrap(): Promise<void> {
         await stopHealthServer(healthServer);
       } catch (err) {
         logger.error('Error stopping health server:', err instanceof Error ? err.message : err);
+      }
+      try {
+        alertManager.stop();
+      } catch (err) {
+        logger.error('Error stopping alert manager:', err instanceof Error ? err.message : err);
       }
       try {
         await closePool();

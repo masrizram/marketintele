@@ -87,6 +87,24 @@ export const envSchema = z.object({
     .string()
     .transform((s) => s === 'true')
     .default('true'),
+
+  // ── Supplier adapter secrets ────────────────────────────────────────────────
+  ALIBABA_API_KEY: z.string().default(''),
+  ALIBABA_API_URL: z.string().default('https://api.alibaba.com/v2'),
+
+  // ── CAPTCHA solving ─────────────────────────────────────────────────────────
+  TWO_CAPTCHA_API_KEY: z.string().default(''),
+  CAPTCHA_TIMEOUT_MS: z.coerce.number().int().positive().default(300000),
+
+  // ── Alerting ────────────────────────────────────────────────────────────────
+  ALERT_CHANNEL: z.enum(['telegram', 'log']).default('log'),
+  ALERT_CHAT_ID: z.string().default(''),
+  ALERT_INTERVAL_MS: z.coerce.number().int().positive().default(300000),
+  ALERT_MIN_SEVERITY: z.enum(['low', 'medium', 'high', 'critical']).default('medium'),
+
+  // ── Health server ───────────────────────────────────────────────────────────
+  HEALTH_PORT: z.coerce.number().int().positive().default(9090),
+  ADMIN_API_KEY: z.string().default(''),
 });
 
 /**
@@ -125,6 +143,16 @@ export interface Config {
   maxSearchResults: number;
   notificationCheckInterval: number;
   ssrfFirewallEnabled: boolean;
+  alibabaApiKey: string;
+  alibabaApiUrl: string;
+  twoCaptchaApiKey: string;
+  captchaTimeoutMs: number;
+  alertChannel: 'telegram' | 'log';
+  alertChatId: string;
+  alertIntervalMs: number;
+  alertMinSeverity: 'low' | 'medium' | 'high' | 'critical';
+  healthPort: number;
+  adminApiKey: string;
 }
 
 /**
@@ -162,6 +190,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxSearchResults: parsed.MAX_SEARCH_RESULTS,
     notificationCheckInterval: parsed.NOTIFICATION_CHECK_INTERVAL_SEC,
     ssrfFirewallEnabled: parsed.SSRF_FIREWALL_ENABLED,
+    alibabaApiKey: parsed.ALIBABA_API_KEY,
+    alibabaApiUrl: parsed.ALIBABA_API_URL,
+    twoCaptchaApiKey: parsed.TWO_CAPTCHA_API_KEY,
+    captchaTimeoutMs: parsed.CAPTCHA_TIMEOUT_MS,
+    alertChannel: parsed.ALERT_CHANNEL,
+    alertChatId: parsed.ALERT_CHAT_ID,
+    alertIntervalMs: parsed.ALERT_INTERVAL_MS,
+    alertMinSeverity: parsed.ALERT_MIN_SEVERITY,
+    healthPort: parsed.HEALTH_PORT,
+    adminApiKey: parsed.ADMIN_API_KEY,
   };
   return _config!;
 }

@@ -16,8 +16,7 @@ import {
  * local PG_* discrete vars. The pool is lazily initialized on first use and
  * closed on process exit.
  *
- * In serverless (Vercel) contexts, use createServerlessPool() instead of the
- * shared getPool() to avoid exhausting connections across invocations.
+ * In the Fly.io worker context, use the shared getPool() for the persistent process.
  */
 let pool: Pool | null = null;
 let resolved: ResolvedDbConfig | null = null;

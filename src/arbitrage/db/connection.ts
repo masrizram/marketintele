@@ -10,7 +10,7 @@
  *   3. PG_* discrete vars      — local Docker/PostgreSQL fallback
  *   4. throw DbConfigError     — never silently default credentials
  *
- * This module is import-safe in serverless (Vercel) contexts: it does NOT
+ * This module is import-safe in the worker (Fly.io) context: it does NOT
  * import telegraf, better-sqlite3, or the legacy SQLite layer.
  */
 import { Pool, PoolConfig } from 'pg';
@@ -160,8 +160,8 @@ export function resolveDbConfig(env?: Record<string, string | undefined>): Resol
 
 /**
  * Default pool sizing per deployment target.
- * - Serverless (Vercel): small pool, short idle timeout, fast connect.
- * - Worker (long-running): larger pool, long idle.
+ * - Worker (Fly.io, long-running): larger pool, long idle timeout.
+ * - Serverless fallback: small pool, short idle timeout (for local dev/testing).
  */
 export function poolDefaultsForServerless(): Partial<PoolConfig> {
   return {

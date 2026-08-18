@@ -1,9 +1,9 @@
 # ── Fly.io deployment config for the MarketIntele Telegram worker ──────────────
 #
 # Deploys the PERSISTENT long-polling worker (src/index.ts → dist/index.js).
-# Vercel continues to host the stateless API (api/*.ts) — do NOT deploy the
-# worker to Vercel (Phase 19.13: serverless lifecycle incompatible with
-# Telegraf long polling).
+# Fly.io is the ONLY deployment platform — there is no Vercel API layer.
+# The worker handles Telegram long polling, health endpoints, and marketplace
+# scraping (HTTP + Chromium CDP).
 #
 # Single instance only: Telegram allows ONE active getUpdates connection per
 # bot token. A second replica causes 409 Conflict. autoscale is intentionally
