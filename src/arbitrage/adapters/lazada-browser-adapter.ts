@@ -122,8 +122,11 @@ export class LazadaBrowserAdapter extends BaseSourceAdapter {
       });
       this.logger.info(`[LazadaBrowser] event=navigation_completed elapsedMs=${Date.now() - t0}`);
 
-      // ── 7. Wait for JS rendering ──
-      await new Promise(r => setTimeout(r, RENDER_WAIT_MS));
+      // ── 7. Wait for product content deterministically (poll DOM) ──
+      // Lazada renders the search result grid asynchronously via XHR after
+      // initial page load. A fixed sleep is unreliable: poll for product
+      // cards (data-tracking="product-card") up to a deadline instead.
+      await this.waitForProductCards(browserWs, sessionId, t0);
       this.logger.info(`[LazadaBrowser] event=render_wait_completed elapsedMs=${Date.now() - t0}`);
 
       // ── 8. Extract products from the rendered DOM ──
@@ -247,6 +250,58 @@ export class LazadaBrowserAdapter extends BaseSourceAdapter {
     }
   }
 
+  /**
+   * Poll the DOM for product cards until they appear or a deadline expires.
+   * Lazada renders search results via XHR (React hydration) after the initial
+   * page load, so a fixed sleep is unreliable.
+   */
+  private async waitForProductCards(ws: CdpBrowserConnection, sessionId: string, t0: number): Promise<void> {
+    const deadline = Date.now() + RENDER_WAIT_MS + 10000;
+    // Start with a short fixed wait to let the initial page shell settle
+    await new Promise(r => setTimeout(r, 3000));
+
+    const pollExpr = `(function(){
+      var c = document.querySelectorAll('[data-tracking="product-card"], [data-item-id], a[href*="/products/"]');
+      return c.length;
+    })()`;
+
+    while (Date.now() < deadline) {
+      try {
+        const evalResult = await ws.send('Runtime.evaluate', { expression: pollExpr, returnByValue: true }, sessionId);
+        const val = evalResult.result?.result?.value ?? evalResult.result?.value;
+        const count = typeof val === 'number' ? val : parseInt(String(val), 10) || 0;
+        if (count > 0) {
+          this.logger.info(`[LazadaBrowser] event=product_cards_detected count=${count} elapsedMs=${Date.now() - t0}`);
+          // Wait an extra 2s for the cards to fully hyper and images to load
+          await new Promise(r => setTimeout(r, 2000));
+          return;
+        }
+      } catch { /* poll failure — try again */ }
+      // Check for redirect to tag page and if so, try the catalog URL directly
+      const urlExpr = `location.href`;
+      try {
+        const urlResult = await ws.send('Runtime.evaluate', { expression: urlExpr, returnByValue: true }, sessionId);
+        const currentUrl = (urlResult.result?.result?.value ?? urlResult.result?.value ?? '') as string;
+        if (currentUrl.includes('/tag/') || currentUrl.includes('catalog_redirect_tag=true')) {
+          this.logger.warn(`[LazadaBrowser] Detected tag/redirect page, navigating to catalog directly url=${currentUrl} elapsedMs=${Date.now() - t0}`);
+          // Extract the query from the URL and navigate to the catalog search URL
+          const qMatch = currentUrl.match(/[?&]q=([^&]+)/);
+          if (qMatch) {
+            const query = decodeURIComponent(qMatch[1]);
+            const catalogUrl = `https://www.lazada.co.id/catalog/?q=${encodeURIComponent(query)}`;
+            this.logger.info(`[LazadaBrowser] event=redirect_navigation target=${catalogUrl} elapsedMs=${Date.now() - t0}`);
+            await ws.send('Page.navigate', { url: catalogUrl }, sessionId);
+            // Wait for navigation to complete
+            await ws.waitForEvent('Page.loadEventFired', 15000, sessionId).catch(() => {});
+            await new Promise(r => setTimeout(r, 3000));
+          }
+        }
+      } catch { /* URL check failure — continue polling */ }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    this.logger.warn(`[LazadaBrowser] event=product_cards_timeout elapsedMs=${Date.now() - t0}`);
+  }
+
   private async extractProducts(ws: CdpBrowserConnection, sessionId: string): Promise<ExtractedProduct[]> {
     const expression = `(() => {
       var r = { products: [], count: 0, captcha: false, loginReq: false, url: location.href, title: document.title, bodyLen: document.body ? document.body.innerHTML.length : 0, bodyTextPreview: '', availableClasses: [] };
@@ -255,19 +310,32 @@ export class LazadaBrowserAdapter extends BaseSourceAdapter {
       if (bt.match(/captcha|punish|robot check|are you a robot|access denied|error_page|verify you are human|slider.*verify/i)) r.captcha = true;
       if (r.url.includes('/punish') || r.url.includes('tmd') || r.url.includes('x5secdata')) r.captcha = true;
       if (bt.match(/login|sign in|log in|masuk|daftar/i) && bt.length < 500 && !r.captcha) r.loginReq = true;
-      // Try multiple selectors — Lazada changes CSS class names frequently
+      // Robust selectors. Lazada product cards are identified by the stable
+      // data-tracking="product-card" attribute (see page meta config:
+      // /lzdse.pub.impr_prod → filter="data-tracking=product-card") with
+      // data-item-id and data-sku-simple attributes. Prefer these stable
+      // attributes over obfuscated CSS classes.
       var sels = [
+        '[data-tracking="product-card"]',
         '[data-qa-locator="product-item"]',
-        '.c1_t2i', '.cRjXWf', '.qmXQo4', '.MA8GD1',
+        'div[data-item-id]',
+        'a[href*="/products/"]',
         '[class*="product-card"]', '[class*="ProductCard"]', '[class*="product-item"]',
         '[class*="ItemCard"]', '[class*="item-card"]', '[class*="product-tile"]',
-        'div[data-spm*="product"]', '[class*="gridItem"]', '[class*="grid-item"]',
-        'a[href*="/products/"]'
+        'div[data-spm*="product"]', '[class*="gridItem"]', '[class*="grid-item"]'
       ];
+      var seen = {};
       var allCards = [];
       for (var i = 0; i < sels.length; i++) {
         var cards = document.querySelectorAll(sels[i]);
-        if (cards.length > 0) { allCards = allCards.concat(Array.prototype.slice.call(cards)); }
+        for (var c = 0; c < cards.length; c++) {
+          var card = cards[c];
+          // Dedupe by DOM element identity to avoid counting the same card twice
+          var key = card.getAttribute && (card.getAttribute('data-item-id') || card.getAttribute('data-sku-simple') || '');
+          if (key && seen[key]) continue;
+          if (key) seen[key] = true;
+          allCards.push(card);
+        }
       }
       r.count = allCards.length;
       // If no products found, collect diagnostic: class names containing product/item/card
@@ -282,16 +350,22 @@ export class LazadaBrowserAdapter extends BaseSourceAdapter {
         }
         r.availableClasses = Object.keys(classSet).slice(0, 30);
       }
-      for (var k = 0; k < Math.min(allCards.length, 10); k++) {
+      for (var k = 0; k < Math.min(allCards.length, 12); k++) {
         var card = allCards[k];
         var text = card.innerText || '';
-        var link = card.querySelector('a[href]');
-        var priceEl = card.querySelector('[class*="price"], [class*="Price"]');
+        // Lazada product links use /products/<slug>-i<itemId>-s<shopId>.html
+        var link = card.querySelector('a[href*="/products/"]') || card.querySelector('a[href*="-i"]');
+        if (!link && card.tagName === 'A' && card.getAttribute('href')) link = card;
+        var itemId = card.getAttribute('data-item-id') || card.getAttribute('data-sku-simple') || '';
+        var priceEl = card.querySelector('[class*="price"], [class*="Price"], [class*="current-price"]');
         var price = priceEl ? priceEl.innerText.trim() : null;
         if (!price) { var pm = text.match(/(?:Rp|IDR)\\s*[\\d.,]+/); if (pm) price = pm[0]; }
-        var titleEl = card.querySelector('[class*="title"], [class*="Title"], [class*="name"], [class*="Name"]');
+        var titleEl = card.querySelector('[class*="title"], [class*="Title"], [class*="name"], [class*="Name"], [class*="description"]');
         var title = titleEl ? titleEl.innerText.trim() : text.substring(0, 150).replace(/\\n/g, ' ');
-        r.products.push({ title: title, price: price, link: link ? link.href : null, image: !!card.querySelector('img') });
+        // If itemId is available but no link, construct the canonical product URL
+        var href = link ? link.href : null;
+        if (!href && itemId) href = 'https://www.lazada.co.id/products/i' + itemId + '.html';
+        r.products.push({ title: title, price: price, link: href, image: !!card.querySelector('img'), itemId: itemId });
       }
       return JSON.stringify(r);
     })()`;
